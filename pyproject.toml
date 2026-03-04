@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "optica"
+version = "0.1.0"
+description = "A simple, powerful Computer Vision toolkit. Full release coming soon."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+[project.urls]
+Homepage = "https://github.com/HolyDen/optica"
