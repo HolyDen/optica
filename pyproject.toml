@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,8 +7,44 @@ name = "optica"
 version = "0.1.1"
 description = "A simple, powerful Computer Vision toolkit. Full release coming soon."
 readme = "README.md"
-requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+
+# Tier 1 — Core. Required for `pip install optica` to be minimally functional.
+# Pillow is Core because `optica fetch` needs it unconditionally for image validation.
+dependencies = [
+    "typer>=0.27,<1.0",
+    "rich>=15.0,<16.0",
+    "python-dotenv>=1.2,<2.0",
+    "pydantic-settings>=2.15,<3.0",
+    "httpx>=0.28,<1.0",
+    "pillow>=12.3,<13.0",
+]
+
+# Tier 2 — Extras. Standard PyPI, no hardware detection, feature-gated.
+# Tier 3 (torch, torchvision, timm, scikit-learn) is NEVER declared here:
+# it installs through `optica setup`, which detects hardware and selects an index URL.
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.141,<1.0",
+    "uvicorn>=0.52,<1.0",
+]
+clip = [
+    "open-clip-torch>=3.3,<4.0",
+]
+all = [
+    "optica[web,clip]",
+]
+# Non-user-facing. Installed once per CI matrix leg, so it holds only the test toolchain.
+test = [
+    "pytest>=9.1,<10.0",
+    "ruff>=0.16,<1.0",
+    "mypy>=2.3,<3.0",
+]
+
+[project.scripts]
+optica = "optica.cli.main:app"
 
 [project.urls]
 Homepage = "https://github.com/HolyDen/optica"
