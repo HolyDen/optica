@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git show *)",
+      "Bash(git add *)",
+      "Bash(git commit -m *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pytest *)",
+      "Bash(ruff *)",
+      "Bash(mypy *)",
+      "Bash(optica *)",
+      "Bash(pip install -e .*)",
+      "Bash(uv pip install -e .*)"
+    ],
+    "ask": [
+      "Edit(README.md)",
+      "Edit(dist/**)"
+    ],
+    "deny": [
+      "Bash(git push *)",
+      "Bash(git reset --hard *)",
+      "Bash(git rebase *)",
+      "Bash(git filter-branch *)",
+      "Bash(git branch -D *)",
+      "Bash(git * --force*)",
+      "Bash(twine *)",
+      "Bash(hatch publish *)",
+      "Bash(uv publish *)",
+      "Bash(python -m twine *)",
+      "Bash(python3 -m twine *)",
+      "Bash(python -m pip *)",
+      "Bash(python3 -m pip *)",
+      "Read(.env)",
+      "Edit(spec/**)"
+    ]
+  }
+}

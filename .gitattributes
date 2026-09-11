@@ -1,0 +1,2 @@
+# The specification is stored byte-identical: CRLF, as written.
+spec/*.md -text

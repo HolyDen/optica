@@ -3,3 +3,27 @@ dist/
 __pycache__/
 *.egg-info/
 .env
+
+# Secrets
+.env.*
+
+# Optica runtime artifacts — never versioned from this repo.
+# Optica self-ignores checkpoints/ and optica-output/ at folder level;
+# dataset/ it deliberately leaves alone, which is wrong for this repo.
+dataset/
+checkpoints/
+optica-output/
+.smoke/
+
+# Claude Code — settings.json is committed, settings.local.json is not
+.claude/settings.local.json
+
+# Build and tool caches
+build/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editor
+.vscode/
