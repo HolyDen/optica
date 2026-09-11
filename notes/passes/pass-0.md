@@ -6,9 +6,15 @@
 `spec/optica-plan-v1-core.md` § "Tech Stack" and § "Implementation Notes".
 
 ## Do
-1. Place `pyproject.toml` at the repo root, replacing the placeholder. Use the
-   prepared file **as written** — do not reconstruct it from any other document,
-   and do not add `click` or `pydantic`. Core is exactly six packages.
+1. **Determine which `pyproject.toml` is in the repo root.** A placeholder and a
+   prepared replacement both exist; which one is committed is not known. The
+   prepared file carries `license-files = ["LICENSE"]`, `requires =
+   ["hatchling>=1.27"]` and the SPDX form `license = "Apache-2.0"`. The
+   placeholder carries `license = { text = "Apache-2.0" }`. Check the file
+   against the plan's Tech Stack section — Core is exactly six packages, and
+   `click` and `pydantic` must **not** appear, since they arrive transitively.
+   Report which one is present before changing anything. Do not reconstruct the
+   file from any other document.
 2. Record the machine in `notes/verified.md`: GPU model, VRAM, driver and CUDA
    version from `nvidia-smi`, and `python --version`. The driver version decides
    whether the `cu130` index applies or the `cu126` fallback does.
