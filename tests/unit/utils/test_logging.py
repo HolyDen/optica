@@ -75,6 +75,54 @@ class TestVerbosity:
         assert "No dataset found" in capsys.readouterr().err
 
 
+class TestLongTokensAreNotFolded:
+    """Paths and commands must survive whole, at any length.
+
+    Rich word-wraps at an assumed 79 columns whenever the stream is not a
+    terminal, and folds a token longer than the remaining width by inserting a
+    newline *inside* it. That broke `optica config --set`'s reported path on CI:
+    a path split mid-token is not copyable, and plan § "Error handling and
+    prompt conventions" requires the opposite.
+
+    Whether the fold lands mid-token depends on the length of the path, so the
+    original failure was reproducible only at certain lengths. These assert the
+    property directly instead, at several lengths and on both streams.
+    """
+
+    @pytest.mark.parametrize("depth", [1, 3, 6, 12, 40])
+    def test_a_long_path_stays_on_one_line(self, depth, capsys):
+        path = "/" + "/".join(f"directory-number-{n}" for n in range(depth))
+        path += "/.optica/config.toml"
+        olog.success(f"epochs = 20  ->  {path}")
+        out = capsys.readouterr().out
+        assert path in out
+        assert "config.toml" in out
+
+    @pytest.mark.parametrize("depth", [1, 3, 6, 12, 40])
+    def test_a_long_path_survives_in_an_error(self, depth, capsys):
+        path = "C:\\" + "\\".join(f"directory-number-{n}" for n in range(depth))
+        olog.render_error(
+            OpticaError(
+                "Could not read the config",
+                fix=f"Run: optica config --view {path}",
+            )
+        )
+        assert path in capsys.readouterr().err
+
+    def test_a_copy_paste_command_is_not_broken(self, capsys):
+        command = (
+            "optica run -c golden_retriever,german_shepherd,border_collie "
+            "--source open-datasets --images-per-class 200 --model efficientnet-large"
+        )
+        olog.render_error(OpticaError("Something went wrong", fix=f"Run: {command}"))
+        assert command in capsys.readouterr().err
+
+    def test_the_console_width_is_not_what_makes_this_work(self):
+        # Soft wrapping, not a wide terminal: CI logs report 79 columns.
+        assert olog.out_console.soft_wrap is True
+        assert olog.err_console.soft_wrap is True
+
+
 class TestRenderError:
     """The three-line structure, plus the fixed-value-flag additions."""
 

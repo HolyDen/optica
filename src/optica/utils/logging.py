@@ -55,10 +55,17 @@ class Verbosity(IntEnum):
 
 _verbosity: Verbosity = Verbosity.NORMAL
 
-out_console: Final = Console()
+# `soft_wrap=True` on both: Rich otherwise word-wraps at an assumed 80 columns
+# whenever the stream is not a terminal — a pipe, a redirect, a CI log — and
+# folds any token longer than the remaining width, inserting a newline *inside*
+# it. Paths and commands are the tokens that get long, and those are exactly the
+# ones plan § "Error handling and prompt conventions" requires to stay
+# copy-paste-ready. Soft wrapping emits the line whole and lets the terminal
+# wrap it for display, so nothing is broken mid-token.
+out_console: Final = Console(soft_wrap=True)
 """Progress and status output. Silenced by ``--quiet``."""
 
-err_console: Final = Console(stderr=True)
+err_console: Final = Console(stderr=True, soft_wrap=True)
 """Warnings, prompts and errors. Never silenced."""
 
 
