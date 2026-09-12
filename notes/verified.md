@@ -217,8 +217,13 @@ case to **34 packages / 200.4 MiB**. Two independent resolvers agreeing to
 | Windows AMD64 | `cpu` | 34 | 200.3 MiB | 0.21 |
 | Windows AMD64 | PyPI default | 34 | 200.4 MiB | 0.21 |
 
-**Per-item breakdown — Linux x86_64 / `cu130`** (everything ≥ 2 MiB; the
-remaining 23 packages total 9.6 MiB):
+Row sizes below are rounded to 0.1 MiB while every total is summed from exact
+byte counts, so a column of displayed rows can differ from its total by a
+tenth or two. The "remaining N packages" figures are exact and make each
+breakdown reconcile to its total in both count and bytes.
+
+**Per-item breakdown — Linux x86_64 / `cu130`** — the 18 largest; the remaining
+**24** packages total **5.5 MiB** (5,731,988 B), for 42 in all:
 
 | Package | Version | Size |
 |---|---|---|
@@ -241,7 +246,7 @@ remaining 23 packages total 9.6 MiB):
 | `timm` | 1.0.29 | 2.5 MiB |
 | `networkx` | 3.6.1 | 2.0 MiB |
 
-The eight torch/CUDA rows alone are **2,188.6 MiB — 95.7% of the total.**
+The eight torch/CUDA rows alone are **2,188.5 MiB — 95.7% of the total.**
 
 **Per-item breakdown — Linux x86_64 / `cpu`** (the path that cannot be measured
 from PyPI at all):
@@ -263,10 +268,27 @@ from PyPI at all):
 **Zero `nvidia-*` packages, and no `triton`** — `triton` is Linux-and-CUDA only
 and is itself 235.4 MiB.
 
-**Per-item breakdown — Windows AMD64 / `cu130`:** `torch` is a **single
-1,898.4 MiB wheel** with **no `nvidia-*` packages at all**, then `scipy`
-34.9, `numpy` 12.0, `scikit-learn` 7.9, `pillow` 6.9, `torchvision` 6.1,
-`sympy` 6.0, `hf-xet` 3.8, `timm` 2.5, `networkx` 2.0, 24 others 3.8 MiB.
+**Per-item breakdown — Windows AMD64 / `cu130`** — the 10 largest; the remaining
+**24** packages total **4.7 MiB** (4,878,533 B), for 34 in all. `torch` is a
+**single wheel with CUDA bundled inside it** and there are **no `nvidia-*`
+packages at all**, which is the whole difference from the Linux table above:
+
+| Package | Version | Size |
+|---|---|---|
+| `torch` | 2.14.0+cu130 | 1,898.4 MiB |
+| `scipy` | 1.17.1 | 34.9 MiB |
+| `numpy` | 2.4.6 | 12.0 MiB |
+| `scikit-learn` | 1.9.1 | 7.9 MiB |
+| `pillow` | 12.3.0 | 6.9 MiB |
+| `torchvision` | 0.29.0+cu130 | 6.1 MiB |
+| `sympy` | 1.14.0 | 6.0 MiB |
+| `hf-xet` | 1.6.0 | 3.8 MiB |
+| `timm` | 1.0.29 | 2.5 MiB |
+| `networkx` | 3.6.1 | 2.0 MiB |
+| 24 others | — | 4.7 MiB |
+
+That one `torch` row is **1,898.4 MiB — 95.6% of the total**, and it is the only
+torch/CUDA row there is.
 
 **Consequences.**
 
