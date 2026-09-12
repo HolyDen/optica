@@ -798,3 +798,75 @@ the one the gap rule exists to prevent — *"the decision is never silent"* — 
 it was silent for a day.
 **Reversible?** Yes — a move plus an import rewrite, with `main.py`'s re-exports
 absorbing most call sites.
+
+### Pass 1 — closed (corrected)
+**Date:** 2026-09-13
+**Corrects:** *"Pass 1 — closed"*, above, dated 2026-09-12 (this file is
+append-only, so that entry stands as written and this one overrides it).
+
+**What was wrong:** that entry reported the milestone **met**. It was not. CI
+failed at the `pytest` step on all three runners on the first push — four
+failures on Ubuntu, of which three were defects in shipped code or in what the
+tests actually assert, and one a real source bug that escaped as a raw traceback.
+The claim was made on the strength of a green local run, which is exactly the
+check `CLAUDE.md` says cannot stand in for the Linux one: *"CI on Ubuntu is
+therefore the only Linux check there is."*
+
+**The deeper error is the same one this repo already has six recorded instances
+of** — a document checked against itself. A milestone reading *"the workflow
+file is valid YAML; the human pushes and confirms it runs green on Ubuntu before
+pass 2 starts"* has two halves, and only the first was verifiable here. Reporting
+"met" collapsed them. The correct report was *"the half I can check is met; the
+half I cannot is pending."* The earlier `notes/verified.md` § task 4 correction
+records the same lesson in the same words: **do not write a pass's outcome in
+past tense before the command has run.**
+
+**Fixed since:** four failures, in five commits — `fix(lockfile)`,
+`fix(logging)`, `fix(system)`, `test(unit)`, `docs(build-log)`. Each is written
+up above.
+
+**Failure attribution across the three runners.** Ubuntu's four are observed;
+the other two are reasoned from them and from measurements on the build machine,
+and are predictions to be confirmed against the next run.
+
+| Failure | Ubuntu | macOS | Windows |
+|---|---|---|---|
+| `pid_is_live` `OverflowError` at 4e9 | **fail** (observed) | **fail** — POSIX, same signed 32-bit `pid_t` | **pass** — ctypes returns a null handle below `2**32`, so the defect is present but out of reach of this input |
+| path folded mid-token | **fail** (observed) | **pass** — the 79-column fold lands elsewhere in a longer line | **pass** — same |
+| `test_the_test_run_is_inside_a_venv` | **fail** | **fail** — toolcache, no venv | **fail** — toolcache, no venv |
+| `test_venv_path_prefers_the_executing_prefix` | **fail** | **fail** | **fail** |
+| **Total** | **4** (observed) | **3** (predicted) | **2** (predicted) |
+
+**The fold row is length-dependent, so treat those two cells as the soft ones.**
+Whether the fold lands inside `config.toml` depends on the exact character
+length of the temp path, which differs per runner. Modelled: Ubuntu 106
+characters folds mid-token; macOS ~136 and Windows ~117-146 do not. The runner
+temp roots were modelled rather than observed, so if either differs from the
+model that row flips and the totals become macOS 4, Windows 3.
+
+**Milestone, restated honestly:**
+- `pip install -e .` then `optica --version` with no torch — **met**, checked
+  locally, and now checked on every runner by `ci.yml`'s last step.
+- Exit codes 0, 1, 2, 3, 130 reachable and covered — **met**.
+- Workflow file is valid YAML — **met**.
+- CI green on Ubuntu — **pending the next run.** Not claimable from here.
+
+**State now:** **457 tests collected — 431 passing, 26 skipped.** The 26 are 25
+forward stubs (14 pass 2, 5 pass 4, 6 pass 5) plus the one `_NO_LOGIC` exemption
+in `test_tree.py`; 14 + 5 + 6 + 1 = 26, and 431 + 26 = 457. Up from 331 collected
+at the first close: +80 for the two missing mirrors, +34 for `cli/__init__.py`,
++12 for the no-fold regression tests, and the rest for the out-of-range PID
+cases and the reframed venv branches. Ruff clean, mypy clean under `strict`.
+Source is unchanged at 16 files; tests are 17 files plus `conftest.py`, from 12.
+
+No `skipif` and no platform-conditional collection, so **all three runners should
+report the same 431 passed, 26 skipped.** A difference between runners is itself
+a finding.
+
+**Handed to pass 5, newly:** CI runs **outside a virtual environment** on all
+three runners. `optica setup --ci` will meet that state, and setup's environment
+resolution must treat it as supported rather than as the "no venv found" hard
+error — `--ci` does no environment detection at all, so the two must not share a
+code path.
+
+**Next:** unchanged — pass 2, `input/` except `clip.py`, once CI is green.
