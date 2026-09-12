@@ -8,6 +8,7 @@ keys.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -71,15 +72,71 @@ class TestGPUDetection:
         assert system.detect_gpu().accelerator == system.Accelerator.CPU
 
 
+def _pretend_venv(monkeypatch, *, prefix: str, base: str) -> None:
+    """Put the interpreter in, or out of, a virtual environment."""
+    monkeypatch.setattr(sys, "prefix", prefix)
+    monkeypatch.setattr(sys, "base_prefix", base)
+
+
 class TestVenv:
-    def test_the_test_run_is_inside_a_venv(self):
-        # The build and CI both run from `.venv`; if this ever fails, the
-        # environment is not the one the milestone was checked against.
+    """Both branches are stubbed rather than inherited from the environment.
+
+    The originals asserted that the test run itself was inside a venv, which is
+    an ambient fact and a false one on all three CI runners: `setup-python`
+    installs into a hosted toolcache, not a venv. What is worth testing is the
+    resolution logic, and stubbing is what makes both of its branches reachable
+    on every runner.
+    """
+
+    def test_differing_prefixes_mean_a_venv(self, monkeypatch):
+        _pretend_venv(monkeypatch, prefix="/proj/.venv", base="/usr")
         assert system.running_in_venv() is True
 
-    def test_venv_path_prefers_the_executing_prefix(self, monkeypatch):
+    def test_equal_prefixes_mean_no_venv(self, monkeypatch):
+        _pretend_venv(monkeypatch, prefix="/usr", base="/usr")
+        assert system.running_in_venv() is False
+
+    def test_an_activated_variable_alone_is_not_a_venv(self, monkeypatch):
+        # A shell can carry a stale VIRTUAL_ENV while the system interpreter
+        # runs. Counting it would hide the mismatch pass 5 has to report.
+        _pretend_venv(monkeypatch, prefix="/usr", base="/usr")
+        monkeypatch.setenv("VIRTUAL_ENV", "/proj/.venv")
+        assert system.running_in_venv() is False
+
+    def test_venv_path_is_the_executing_prefix(self, monkeypatch):
+        _pretend_venv(monkeypatch, prefix="/proj/.venv", base="/usr")
         monkeypatch.setenv("VIRTUAL_ENV", "/somewhere/else")
-        assert str(system.venv_path()) == sys.prefix
+        assert system.venv_path() == Path("/proj/.venv")
+
+    def test_venv_path_is_none_outside_a_venv(self, monkeypatch):
+        _pretend_venv(monkeypatch, prefix="/usr", base="/usr")
+        monkeypatch.setenv("VIRTUAL_ENV", "/somewhere/else")
+        assert system.venv_path() is None
+
+    def test_declared_venv_reports_the_variable(self, monkeypatch):
+        monkeypatch.setenv("VIRTUAL_ENV", "/proj/.venv")
+        assert system.declared_venv() == Path("/proj/.venv")
+
+    def test_declared_venv_is_none_when_unset(self, monkeypatch):
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        assert system.declared_venv() is None
+
+    def test_the_mismatch_is_visible_to_a_caller(self, monkeypatch):
+        # Activated one environment, executing another: plan § "optica setup"
+        # makes this a hard error, so the two values must stay distinguishable.
+        _pretend_venv(monkeypatch, prefix="/proj/.venv", base="/usr")
+        monkeypatch.setenv("VIRTUAL_ENV", "/other/.venv")
+        info = system.detect_system()
+        assert info.venv != info.declared_venv
+
+    def test_no_venv_is_a_supported_state_not_an_error(self, monkeypatch):
+        # CI's actual state on all three runners.
+        toolcache = "/opt/hostedtoolcache/Python"
+        _pretend_venv(monkeypatch, prefix=toolcache, base=toolcache)
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        info = system.detect_system()
+        assert info.in_venv is False
+        assert info.venv is None
 
 
 class TestSystemInfo:

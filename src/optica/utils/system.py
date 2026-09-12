@@ -28,6 +28,7 @@ __all__ = [
     "Accelerator",
     "GPUInfo",
     "SystemInfo",
+    "declared_venv",
     "detect_gpu",
     "detect_system",
     "running_in_venv",
@@ -78,8 +79,13 @@ class SystemInfo:
         os_version: The platform's own release string.
         machine: The processor architecture, e.g. ``AMD64`` or ``arm64``.
         python_version: ``major.minor.patch`` of the running interpreter.
-        in_venv: Whether the interpreter is inside a virtual environment.
-        venv: The environment's root, or None.
+        in_venv: Whether the interpreter is **executing** inside a virtual
+            environment.
+        venv: The environment being executed from, or None.
+        declared_venv: The environment ``VIRTUAL_ENV`` names, or None. Held
+            separately from ``venv`` because the two disagreeing is itself the
+            condition pass 5's setup must report — an activated environment
+            Optica is not running from.
         gpu: The result of :func:`detect_gpu`.
     """
 
@@ -89,23 +95,41 @@ class SystemInfo:
     python_version: str
     in_venv: bool
     venv: Path | None
+    declared_venv: Path | None
     gpu: GPUInfo
 
 
 def running_in_venv() -> bool:
-    """Whether the running interpreter is inside a virtual environment."""
-    return sys.prefix != sys.base_prefix or "VIRTUAL_ENV" in os.environ
+    """Whether the interpreter is **executing** inside a virtual environment.
+
+    Decided by the prefixes alone. ``VIRTUAL_ENV`` deliberately does not count:
+    the variable says which environment was *activated*, and a shell can carry a
+    stale one while the system interpreter runs. Treating that as "in a venv"
+    would hide exactly the mismatch pass 5's setup has to report.
+
+    Running outside a venv is a supported state, not an error — GitHub Actions'
+    ``setup-python`` installs into a hosted toolcache, so CI is always in it.
+    """
+    return sys.prefix != sys.base_prefix
 
 
 def venv_path() -> Path | None:
-    """Return the active virtual environment's root, or None.
+    """Return the virtual environment being executed from, or None.
 
-    ``sys.prefix`` is preferred over ``VIRTUAL_ENV``: the variable says which
-    environment was *activated*, while the prefix says which one is actually
-    executing, and setup's hard error is about the second.
+    ``sys.prefix`` rather than ``VIRTUAL_ENV``, for the reason in
+    :func:`running_in_venv`. Use :func:`declared_venv` for what was activated.
     """
-    if sys.prefix != sys.base_prefix:
-        return Path(sys.prefix)
+    return Path(sys.prefix) if running_in_venv() else None
+
+
+def declared_venv() -> Path | None:
+    """Return the environment ``VIRTUAL_ENV`` names, or None.
+
+    Reported alongside :func:`venv_path` rather than merged into it: when the
+    two differ, the user activated one environment and is running another, which
+    plan § "`optica setup`" makes a hard error rather than something to resolve
+    silently.
+    """
     declared = os.environ.get("VIRTUAL_ENV")
     return Path(declared) if declared else None
 
@@ -223,5 +247,6 @@ def detect_system() -> SystemInfo:
         python_version=platform.python_version(),
         in_venv=running_in_venv(),
         venv=venv_path(),
+        declared_venv=declared_venv(),
         gpu=detect_gpu(),
     )
