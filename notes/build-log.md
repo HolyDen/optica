@@ -520,3 +520,124 @@ pytest's import mode cannot hold two modules of one name. Second, mypy scopes
 per-directory settings by module path, so the `tests.*` override that relaxes
 `disallow_untyped_defs` for test signatures has nothing to match without them.
 **Reversible?** Yes, but the collision hazard returns with it.
+
+### `.env` is read but never printed
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/config/manager.py:_env_values`
+**Missing:** plan § "Configuration" puts `.env` at the env-var tier and
+`CLAUDE.md` forbids reading, printing or committing it. The two are in tension
+only in appearance: the Config Manager must *load* `.env` for the priority chain
+to be correct, and the repo's own `.env` must never be displayed.
+**Assumed:** `load_dotenv(path, override=False)` loads the file into the process
+environment and nothing reads its text back. The only key it can supply is
+`flickr_api_key`, which `--view` masks and `--set` never echoes, so no value from
+`.env` can reach the terminal. The repo's `.env` was never opened during this
+pass.
+**Why:** it is the plan's stated mechanism, and the masking rule is what makes it
+safe rather than a promise not to look.
+**Reversible?** n/a — this records how the constraint was met.
+
+### A piped answer is not an answer
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/utils/prompts.py:is_interactive`
+**Missing:** the plan says a prompt in a "non-prompting context" raises rather
+than blocking, without defining the context.
+**Assumed:** stdin not being a terminal. `printf 'n' | optica config --init`
+therefore raises the hard error ("Re-run with --yes, or run this in a terminal")
+rather than reading `n` — exit `1`, not `3`.
+**Why:** the alternative is to let Click read stdin, and Click raises `Abort` for
+**both** an interrupt and an EOF, which would return `130` where a
+missing-answer is not an interrupt — the same conflation that makes
+`confirm(..., abort=True)` banned. The plan also already names the unattended
+answers: `--yes` for a non-destructive prompt, a dedicated flag for a destructive
+one, and *"must be answered interactively"* for a destructive prompt with no
+flag, which is exactly `config --init`'s overwrite case.
+**Consequence for testing:** exit `3` is reachable from a real process only with
+a terminal, so `tests/integration/test_exit_codes.py` drives the real code path
+with `is_interactive` stubbed. The prompt, the decline, the exit code and the
+process status are all real; only the terminal check is not.
+**Reversible?** Yes — one predicate, though reversing it reintroduces the
+EOF-versus-interrupt conflation.
+
+### Pass 1 — closed
+**Date:** 2026-09-12
+**Built:** 16 files under `src/` — 12 modules plus 4 package `__init__.py`:
+
+| Area | Modules |
+|---|---|
+| exceptions | `exceptions.py` |
+| `utils/` | `logging.py`, `prompts.py`, `system.py`, `progress.py`, `lockfile.py` |
+| `config/` | `defaults.py`, `schema.py`, `manager.py` |
+| `cli/` | `main.py`, `classify.py`, `config.py` |
+| packages | `optica/__init__.py`, `cli/__init__.py`, `config/__init__.py`, `utils/__init__.py` |
+
+Plus `.github/workflows/ci.yml`, the `.gitattributes` extension, `[tool.ruff]`
+and `[tool.mypy]` in `pyproject.toml`, and 13 test files (12 test modules and
+`conftest.py`) with 6 package markers. **331 tests collected: 306 passing, 25
+skipped stubs** — 14 for pass 2, 5 for pass 4, 6 for pass 5.
+
+**Milestone:** *"`pip install -e .` then `optica --version` works with no torch
+installed, and each of exit codes 0, 1, 2, 3 and 130 is reachable and covered by
+a test stub. The workflow file is valid YAML."* — **met.**
+- `pip install -e ".[test]"` into an empty 3.11.9 venv, then
+  `optica --version` prints `optica 0.1.1`, exit `0`. `import torch` in the same
+  venv still fails, so the check is not vacuous, and a test asserts that.
+- All five exit codes are covered twice: as unit tests through the handler, and
+  as integration tests reading a **real process's** status
+  (`tests/integration/test_exit_codes.py`). `3` is a declined
+  `config --init`; `130` is both a `KeyboardInterrupt` and a `typer.Abort` at
+  that prompt, which is the distinction `confirm(..., abort=True)` would erase.
+- `ci.yml` parses as valid YAML: triggers `push` and `pull_request` with no
+  branch filter, three runners, one Python version, and no `optica setup` step.
+- Ruff clean, mypy clean (`strict`), on `src/` and `tests/`.
+
+**The global Typer exception handler shipped first**, as the plan's hard
+sequencing prerequisite requires — commit `feat(cli): add global Typer exception
+handler`, before any other CLI commit.
+
+**Verification done this pass** (all in `notes/verified.md` § "Pass 1"):
+Click's restriction of variable-length `nargs` to positional arguments —
+**confirmed exactly**, closing the gate item pass 0 handed forward; Typer 0.27.2
+vendors Click and does not depend on it; `typer.Typer` has no
+`exception_handler()`; the exception class each parser-error shape actually
+raises; non-ASCII status glyphs crashing a non-UTF-8 Windows stdout; and the
+installed toolchain snapshot.
+
+**Left open:**
+- **CI has not run.** `git push` is denied to the agent, so the workflow is
+  valid-and-untested. A human pushes `build/v0.2.0` and confirms green on Ubuntu
+  before pass 2 starts — the pass's own stated condition.
+- `optica config --clear-staging` → **pass 2**, with the Input Manager that owns
+  its deletion logic.
+- `--classes` followed by another flag binding that flag as its value → **pass
+  2**, in the class-name rules.
+- `cli/setup.py` and the registries → **pass 5**; `DEFAULT_TASK`'s one-entry
+  mapping in `main.py` is `TASK_REGISTRY`'s seat until then.
+- `OpticaLockError` as the class the hierarchy is missing → **post-V1 pass**.
+- The MPS branch of `utils/system.py` is written but never run: this machine has
+  an NVIDIA GPU. The CUDA branch is exercised; the Apple-silicon branch is
+  covered only by a stubbed `platform.machine`.
+
+**Entries logged this pass:** 14, of which **12 are assumptions**, 1 is a finding
+handed forward, and 1 is a record.
+
+| # | Entry | Kind |
+|---|---|---|
+| 1 | The global exception handler's mechanism | assumption |
+| 2 | `click` is not importable — the vendored class | assumption |
+| 3 | ASCII fallback for the four status glyphs | assumption |
+| 4 | `ExitCode` placed in `exceptions.py` | assumption |
+| 5 | `utils/prompts.py` added to the plan's `utils/` list | assumption |
+| 6 | `cli/config.py` built in pass 1, minus `--clear-staging` | assumption |
+| 7 | `DEFAULT_TASK` stands in for `TASK_REGISTRY` | assumption |
+| 8 | Tool configuration added to `pyproject.toml` | assumption |
+| 9 | The lock-file conflict raises `OpticaError` directly | assumption |
+| 10 | Windows PID liveness cannot use `os.kill(pid, 0)` | assumption |
+| 11 | `--classes` followed by another flag binds that flag | **finding → pass 2** |
+| 12 | `tests/` is a package | assumption |
+| 13 | `.env` is read but never printed | record |
+| 14 | A piped answer is not an answer | assumption |
+
+12 + 1 + 1 = 14.
+
+**Next:** pass 2 — `input/` except `clip.py`. Read `notes/verified.md` first:
+task 3 settled the Open Images column schema, and the Click `nargs` entry settles
+how `-c` values arrive.
