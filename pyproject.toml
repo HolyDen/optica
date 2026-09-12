@@ -67,3 +67,47 @@ exclude = [
 
 [tool.pytest.ini_options]
 markers = ["slow: requires torch"]
+testpaths = ["tests"]
+
+# CI runs bare `ruff check` and bare `mypy`, so both need to be told what to look
+# at here — a green `mypy` that examined no files is not a check.
+[tool.ruff]
+target-version = "py311"
+src = ["src"]
+line-length = 90
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "RUF", "D", "ANN", "BLE"]
+ignore = [
+    "D203",   # conflicts with D211
+    "D213",   # conflicts with D212
+    "D107",   # Google style documents __init__ args in the class docstring
+    "ANN401", # *args/**kwargs on framework overrides are genuinely Any
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test functions document themselves through their names, and their signatures
+# are fixtures rather than an API surface.
+"tests/**" = ["D100", "D101", "D102", "D103", "ANN001", "ANN002", "ANN003", "ANN201", "ANN202"]
+
+[tool.ruff.lint.flake8-bugbear]
+# The Typer idiom: the option object *is* the default.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# Tests stay type-checked, but a test function's signature is a list of fixtures
+# rather than an API surface, so annotating every one adds noise without adding
+# a check. Plan § "Coding Style" asks for full coverage of the package.
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_decorators = false

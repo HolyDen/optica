@@ -1,2 +1,8 @@
+# Three CI runners and a Windows dev machine otherwise disagree about line
+# endings. Normalize everything to LF in the repository.
+# Order matters: later rules win, so the specification's exemption must follow
+# the catch-all rather than precede it.
+* text=auto eol=lf
+
 # The specification is stored byte-identical: CRLF, as written.
 spec/*.md -text
