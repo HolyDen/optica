@@ -641,3 +641,160 @@ handed forward, and 1 is a record.
 **Next:** pass 2 — `input/` except `clip.py`. Read `notes/verified.md` first:
 task 3 settled the Open Images column schema, and the Click `nargs` entry settles
 how `-c` values arrive.
+
+## Pass 1 — CI repair
+
+The first CI run failed at the `pytest` step on all three runners. Four failures
+on Ubuntu; the entries below are the whole set, with the other two runners'
+behaviour reasoned from them. The pass's milestone was therefore not met when it
+was reported met, and these fixes are pass 1 work inside pass 1 scope.
+
+**What this run proved that the local one could not.** Every one of the four is a
+thing the development machine cannot see: a Linux `os.kill`, a temp path of a
+different length, and an interpreter outside a venv. `CLAUDE.md` says CI on
+Ubuntu is the only Linux check there is; three of these four are the reason that
+sentence exists.
+
+### `pid_is_live` raised on an out-of-range PID — a source bug, not a test bug
+**Pass:** 1   **Date:** 2026-09-13   **Where:** `src/optica/utils/lockfile.py:pid_is_live`
+**Found:** `os.kill` takes a signed 32-bit `pid_t`, so `os.kill(4_000_000_000, 0)`
+raises `OverflowError` **before any error check runs**. It escaped as a raw
+traceback, which plan § "Coding Style" forbids unconditionally. The test that
+caught it was written as "above any plausible allocation on either platform" —
+it was testing the guard that did not exist.
+**Reach is wider than the test:** the lock file is plain JSON that a user can
+hand-edit and a crash can truncate, so `read_lock`'s `int(raw["pid"])` can
+produce any integer at all. The same input reached `acquire_lock`, so a
+malformed lock file would have crashed every write command with a traceback and
+no way to recover but to find and delete a file whose path the error never
+printed.
+**The Windows branch has the same bug at a different threshold.** Measured on the
+build machine: `OpenProcess` returns a null handle for `4_000_000_000`, `2**31`
+and `2**32 - 1` — no error — and raises
+`ArgumentError: OverflowError: int too long to convert` from `2**32` upward,
+because ctypes converts the PID to a 32-bit `DWORD`. So Windows passed the
+failing test locally and in CI while carrying the identical defect one binary
+order of magnitude further out.
+**Fixed:** a shared `_is_plausible_pid` guard against `_MAX_PID`, which is the
+platform's own ceiling — `2**32 - 1` on Windows, `2**31 - 1` on POSIX. An
+out-of-range PID answers `False`: it is not a process that ended, it is a number
+that was never a PID, and both readings lead to the same disposition, so the
+stale-lock path already handles it correctly.
+**Also fixed, found while reading the same lines:** the Windows branch let ctypes
+*infer* its signatures, which truncates the returned `HANDLE` to 32 bits on
+64-bit Windows. `argtypes` and `restype` are now declared. This was silent and
+would have stayed silent.
+**Reversible?** Yes, but the guard is not optional — removing it restores a
+crash on reachable input.
+
+### `optica config --set` printed a path broken mid-token
+**Pass:** 1   **Date:** 2026-09-13   **Where:** `src/optica/utils/logging.py`
+**Found:** Rich word-wraps at an assumed 79 columns whenever the stream is not a
+terminal — a pipe, a redirect, a CI log — and *folds* a token longer than the
+remaining width by inserting a newline inside it. On Ubuntu that split
+`config.toml` across two lines in `--set`'s output.
+**Treated as the defect rather than as a strict assertion.** A path broken
+mid-token is not copyable, and this is the one line whose whole purpose is to
+tell the user which file was written — plan § "Configuration" requires the path
+be reported "so it is never a file the user did not know appeared", which a
+broken path only half does. The same fold would break the plan's
+copy-paste-ready corrected command.
+**Fixed:** `soft_wrap=True` on both consoles, set once at construction rather
+than per call site. The line is emitted whole and the terminal wraps it for
+display, so nothing is broken mid-token at any width.
+**The test was also flaky by construction, which is why it fired on one runner
+and not the others.** Whether the fold lands inside `config.toml` depends on the
+exact length of the temp path, and that differs per runner and per run. Measured
+for the plausible roots: Ubuntu's 106-character line folds mid-token; macOS's
+136 and Windows's 117-146 do not. So the *same* defect passed on two runners.
+A length-independent regression test now asserts the property directly, at five
+path depths and on both streams.
+**Reversible?** Yes — one constructor argument each.
+
+### Two `TestVenv` tests asserted an ambient fact, not the code
+**Pass:** 1   **Date:** 2026-09-13   **Where:** `tests/unit/utils/test_system.py`
+**Found:** `test_the_test_run_is_inside_a_venv` and
+`test_venv_path_prefers_the_executing_prefix` both assumed the test run was
+inside a virtual environment. It is not, on any runner:
+`actions/setup-python` installs into the hosted toolcache, and `pip install -e .`
+goes there. Both tests were asserting a property of the machine.
+**Not fixed by changing `ci.yml`.** The workflow matches what
+`notes/passes/pass-1.md` specifies, and adding a venv step would make the tests
+pass by rearranging the world around them — while leaving both branches of the
+resolution logic still untested. The tests were what was wrong.
+**Fixed:** both reframed to stub `sys.prefix`, `sys.base_prefix` and
+`VIRTUAL_ENV`, so each branch is reachable and deterministic on every runner.
+Nine tests now cover: differing prefixes, equal prefixes, a stale `VIRTUAL_ENV`
+alone, the path inside and outside a venv, the declared path, the mismatch, and
+CI's own no-venv state.
+
+### `running_in_venv()` and `venv_path()` disagreed with each other
+**Pass:** 1   **Date:** 2026-09-13   **Where:** `src/optica/utils/system.py`
+**Found:** while answering "does anything under `src/` behave differently when
+`running_in_venv()` is False". Nothing does — **no module outside `system.py`
+reads it; it is reported, never branched on** — but the two functions disagreed.
+`running_in_venv()` returned True for `sys.prefix != sys.base_prefix` **or** a
+set `VIRTUAL_ENV`, while `venv_path()` preferred the prefix and fell back to the
+variable. So a shell carrying a stale `VIRTUAL_ENV` over the system interpreter
+reported "in a venv" and returned the wrong path — and that combination is
+exactly the condition plan § "`optica setup`" makes a hard error: an active
+environment Optica is not running from.
+**Fixed:** `running_in_venv()` is the prefixes alone. `venv_path()` returns the
+executing prefix or None. A new `declared_venv()` returns `VIRTUAL_ENV`, and
+`SystemInfo` carries both, so the mismatch stays visible to the caller that has
+to report it instead of being resolved silently into one value.
+**For pass 5:** **CI runs outside a venv on all three runners.** That is now a
+known, tested state rather than an assumption, and `optica setup --ci` will meet
+it — `--ci` is config-init only, with no environment detection, so it must not
+consult any of these. Setup's other paths must treat "no venv" as a supported
+state and the venv/declared mismatch as the hard error the plan names.
+**Reversible?** Yes, but reversing reinstates the disagreement.
+
+### `tests/unit/` did not mirror the source tree, and nothing checked
+**Pass:** 1   **Date:** 2026-09-13   **Where:** `tests/unit/`
+**Found:** `config/schema.py` (251 lines, all the validation) and
+`cli/__init__.py` (136 lines, holding `split_values`) had no test file.
+`split_values` is the implementation of the comma value-separator convention
+this pass verified against Click's real behaviour — the module least entitled to
+be the untested one. Both were exercised only indirectly, through
+`test_manager.py` and `test_classify.py`, so a failure could not say which layer
+broke.
+**Fixed:** `tests/unit/config/test_schema.py` (46 tests) and
+`tests/unit/cli/test_init.py` (34 tests) added; `tests/unit/test_init.py` and
+`tests/unit/config/test_init.py` added for the two package modules that carry a
+public surface. `TestSplitValues` moved out of `test_classify.py` and
+`TestGlobalState` out of `test_main.py`, so each lives in the file mirroring its
+module rather than in two places free to drift.
+**And the rule is now checked rather than remembered:** `tests/unit/test_tree.py`
+asserts that every module under `src/optica/` has a mirroring test file. A module
+that genuinely holds no code is named in an explicit `_NO_LOGIC` allowlist — one
+entry, `utils/__init__.py` — so skipping one is a deliberate, visible act. Two
+further tests keep the allowlist honest: one fails if an exempt module grows
+code, one fails if a listed module is deleted or renamed. The check was verified
+to bite by removing `test_schema.py` and watching it fail.
+**Why a test rather than a habit:** the gap was found by a human reading the
+tree. `CLAUDE.md` states the mirror rule, and a rule stated in prose is checked
+only when someone remembers to look.
+
+### `split_values` and `GlobalState` were placed in `cli/__init__.py` unlogged
+**Pass:** 1   **Date:** 2026-09-13   **Where:** `src/optica/cli/__init__.py`
+**Missing:** the plan's `cli/` tree names `main.py`, `classify.py`, `config.py`
+and `setup.py`. It gives no home for state shared between them, nor for the
+value-separator helper that `classify.py` and pass 5's `setup.py`
+(`--include-extras`) both need.
+**Assumed:** both live in the package's `__init__.py`.
+**Why:** `main.py` must import `classify.py` to register the group, and
+`classify.py` must read the shared state, so defining the state in `main.py`
+makes that a circular import. `__init__.py` is upstream of both and adds no file
+to the plan's tree. `main.py` re-exports `GlobalState` and `get_state`, so no
+caller needs to know where they live. *Rejected: a new `cli/state.py`, which is
+more discoverable but is a second deviation from the tree on top of
+`utils/prompts.py`; and a late import at the bottom of `main.py`, which works
+only if `main` is imported before `classify` and fails silently otherwise.*
+**This should have been logged when it was made.** It is the same class of
+decision as `ExitCode` going in `exceptions.py` and `utils/prompts.py` being
+added, both of which got entries in this file on the same day. The omission is
+the one the gap rule exists to prevent — *"the decision is never silent"* — and
+it was silent for a day.
+**Reversible?** Yes — a move plus an import rewrite, with `main.py`'s re-exports
+absorbing most call sites.
