@@ -31,9 +31,55 @@ class TestPidLiveness:
         assert lockfile.pid_is_live(-1) is False
         assert lockfile.pid_is_live(0) is False
 
-    def test_a_very_high_pid_is_not_live(self):
-        # Above any plausible allocation on either platform.
-        assert lockfile.pid_is_live(4_000_000_000) is False
+
+class TestOutOfRangePid:
+    """A PID wider than the platform's own type answers False, never raises.
+
+    The lock file is plain JSON that a user can hand-edit and a crash can
+    truncate, so these values are reachable input. Unguarded, POSIX
+    ``os.kill`` raises ``OverflowError`` above 2**31-1 and the ctypes call
+    raises ``ArgumentError`` above 2**32-1 — both before any error check runs,
+    and both escaping as a raw traceback.
+    """
+
+    @pytest.mark.parametrize(
+        "pid",
+        [
+            2**31 - 1,  # the POSIX ceiling itself
+            2**31,  # one past it: OverflowError, unguarded
+            4_000_000_000,  # the value CI failed on
+            2**32 - 1,  # the Windows ceiling itself
+            2**32,  # one past it: ctypes ArgumentError, unguarded
+            2**63,
+            10**30,  # far wider than any C integer type
+        ],
+    )
+    def test_answers_without_raising(self, pid):
+        assert lockfile.pid_is_live(pid) is False
+
+    def test_the_bound_is_the_platform_s_own(self):
+        import sys
+
+        expected = 2**32 - 1 if sys.platform == "win32" else 2**31 - 1
+        assert expected == lockfile._MAX_PID
+
+    def test_a_hand_edited_lock_file_is_treated_as_stale(self):
+        # The end-to-end shape of the same bug: a nonsense PID in the file must
+        # read as "no live lock", not as a traceback.
+        lockfile.lock_path().write_text(
+            json.dumps({"pid": 10**30, "command": "optica run", "run_id": "r"}),
+            encoding="utf-8",
+        )
+        assert lockfile.read_lock() is None
+        assert not lockfile.lock_path().exists()
+
+    def test_a_lock_file_with_an_out_of_range_pid_does_not_block(self):
+        lockfile.lock_path().write_text(
+            json.dumps({"pid": 2**40, "command": "optica run", "run_id": "r"}),
+            encoding="utf-8",
+        )
+        with lockfile.acquire_lock("optica fetch") as info:
+            assert info.command == "optica fetch"
 
 
 class TestAcquire:

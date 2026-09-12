@@ -23,6 +23,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
+from typing import Final
 
 from optica.exceptions import OpticaError
 
@@ -74,6 +75,20 @@ def lock_path() -> Path:
     return optica_home() / "optica.lock"
 
 
+# The widest PID the platform's own API can represent. A value outside it is
+# not a process that has ended -- it is a number that was never a PID, and both
+# branches below raise on one rather than returning an answer: POSIX `os.kill`
+# takes a signed 32-bit `pid_t`, and ctypes converts to a 32-bit DWORD. A lock
+# file is a plain JSON file a user can hand-edit and a crash can truncate, so an
+# out-of-range PID is reachable input, not a theoretical one.
+_MAX_PID: Final = 2**32 - 1 if sys.platform == "win32" else 2**31 - 1
+
+
+def _is_plausible_pid(pid: int) -> bool:
+    """Whether ``pid`` is a number the platform could have issued as a PID."""
+    return 0 < pid <= _MAX_PID
+
+
 if sys.platform == "win32":
 
     def pid_is_live(pid: int) -> bool:
@@ -83,8 +98,12 @@ if sys.platform == "win32":
         :func:`os.kill` maps every ordinary signal onto ``TerminateProcess``, so
         the POSIX ``kill(pid, 0)`` idiom would kill the process it is asking
         about.
+
+        ``argtypes`` and ``restype`` are declared rather than inferred. Inferred,
+        ctypes converts the PID to a signed C ``int`` and truncates the returned
+        ``HANDLE`` to 32 bits, which is wrong on 64-bit Windows and silently so.
         """
-        if pid <= 0:
+        if not _is_plausible_pid(pid):
             return False
 
         import ctypes
@@ -94,6 +113,16 @@ if sys.platform == "win32":
         still_active = 259
 
         kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
         handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
         if not handle:
             return False
@@ -101,7 +130,7 @@ if sys.platform == "win32":
             code = wintypes.DWORD()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
                 return False
-            return code.value == still_active
+            return bool(code.value == still_active)
         finally:
             kernel32.CloseHandle(handle)
 
@@ -112,7 +141,7 @@ else:
 
         Signal 0 performs the error checks without sending anything.
         """
-        if pid <= 0:
+        if not _is_plausible_pid(pid):
             return False
         try:
             os.kill(pid, 0)
