@@ -27,7 +27,6 @@ future ``cli/detect.py``.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
 from importlib import metadata
 from typing import Any, Final, NoReturn
 
@@ -39,75 +38,25 @@ from typer._click.exceptions import (
     UsageError,
 )
 
+from optica.cli import GlobalState, get_state, split_values
+from optica.cli.classify import classify_app
+from optica.cli.config import register as register_config
+from optica.config.defaults import DEFAULT_TASK
 from optica.exceptions import ExitCode, OpticaError
 from optica.utils import logging as olog
 from optica.utils.prompts import is_interactive
 
-__all__ = ["GlobalState", "OpticaTyper", "app", "get_state"]
+__all__ = [
+    "GlobalState",
+    "OpticaTyper",
+    "app",
+    "get_state",
+    "split_values",
+]
 
 _CLASSES_OPTS: Final = frozenset({"--classes", "-c"})
 """The one flag whose "given with no value" case redirects to a prompt rather
 than to an error (plan § *Flag (no value) behavior*)."""
-
-
-@dataclass
-class GlobalState:
-    """Flags that apply to the whole run, wherever on the line they appear.
-
-    ``--verbose``, ``--quiet``, ``--yes``/``-y``, ``--force``/``-f`` and
-    ``--dry-run`` are accepted in either position, so each is declared both on
-    the root callback and on every command; :meth:`merge` folds the two
-    sightings together. ``--force`` is registered globally from V1 — the same
-    pattern as the display flags — so that safety prompts added to commands
-    later need no flag re-registration.
-    """
-
-    verbose: bool = False
-    quiet: bool = False
-    yes: bool = False
-    force: bool = False
-    dry_run: bool = False
-    argv: list[str] = field(default_factory=list)
-
-    def merge(
-        self,
-        *,
-        verbose: bool = False,
-        quiet: bool = False,
-        yes: bool = False,
-        force: bool = False,
-        dry_run: bool = False,
-    ) -> GlobalState:
-        """Fold a command's own sighting of the global flags into this state."""
-        self.verbose = self.verbose or verbose
-        self.quiet = self.quiet or quiet
-        self.yes = self.yes or yes
-        self.force = self.force or force
-        self.dry_run = self.dry_run or dry_run
-        self.apply()
-        return self
-
-    def apply(self) -> None:
-        """Push the display flags into the output layer.
-
-        ``--verbose`` wins over ``--quiet`` when both are given: it adds detail
-        rather than unlocking messages ``--quiet`` withheld, so the louder of
-        the two is never the surprising choice.
-        """
-        level = olog.Verbosity.NORMAL
-        if self.verbose:
-            level = olog.Verbosity.VERBOSE
-        elif self.quiet:
-            level = olog.Verbosity.QUIET
-        olog.set_verbosity(level)
-        olog.configure_stdlib_logging(level)
-
-
-def get_state(ctx: typer.Context) -> GlobalState:
-    """Return the run's :class:`GlobalState`, creating it if needed."""
-    if not isinstance(ctx.obj, GlobalState):
-        ctx.obj = GlobalState()
-    return ctx.obj
 
 
 def _version() -> str:
@@ -324,3 +273,30 @@ def _root(
     state.merge(
         verbose=verbose, quiet=quiet, yes=yes, force=force, dry_run=dry_run
     )
+
+
+# Task groups. `TASK_REGISTRY` has no stated home in the plan and is built in
+# pass 5; until then this one-entry mapping is its seat. `main.py` never spells
+# "classify" as a literal -- alias resolution consults `DEFAULT_TASK`, so a
+# post-V1 task type slots in without restructuring the CLI.
+_TASK_GROUPS: Final[dict[str, typer.Typer]] = {DEFAULT_TASK: classify_app}
+
+
+def _register_tasks() -> None:
+    """Register each task group, plus the default task's flat aliases.
+
+    The canonical form is ``optica classify <command>``; the flat forms
+    (``optica run``, ``optica train``, ...) are **permanent aliases**, never
+    deprecated or removed, and they resolve through ``DEFAULT_TASK`` rather than
+    through a hardcoded group name.
+    """
+    for task_name, group in _TASK_GROUPS.items():
+        app.add_typer(group, name=task_name)
+    for command in _TASK_GROUPS[DEFAULT_TASK].registered_commands:
+        app.registered_commands.append(command)
+    # `optica config` is task-independent: settings are Optica's, not
+    # classification's, so it sits beside the task groups rather than inside one.
+    register_config(app)
+
+
+_register_tasks()
