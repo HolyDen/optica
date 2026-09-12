@@ -535,3 +535,191 @@ per-item breakdown exposed and a total alone would have hidden:
 **Consequence:** this is the "print the breakdown, not the total" rule from
 `CLAUDE.md` paying for itself a second time. The 78.6 MiB figure was plausible,
 in range, and wrong. Kept here so a later pass does not re-derive it with HEAD.
+
+---
+
+## Pass 1
+
+### Click's restriction of variable-length `nargs` to positional arguments
+
+**Date:** 2026-09-12
+**How:** Typer 0.27.2 (which vendors Click — see the next entry), in `.venv`.
+Behavioural probe through `typer.testing.CliRunner` against a two-command app
+with `classes: list[str] = typer.Option(None, "--classes", "-c")`, plus
+`inspect.signature(typer.Option)`:
+
+```
+python -c "import inspect, typer; print('nargs' in inspect.signature(typer.Option).parameters)"
+```
+
+**Result: the plan's claim holds exactly, error text included.**
+
+| Invocation | Exit | Parsed / message |
+|---|---|---|
+| `go --classes cat` | 0 | `['cat']` |
+| `go --classes cat dog` | **2** | **`Got unexpected extra argument(s) (dog)`** |
+| `go -c cat -c dog` | 0 | `['cat', 'dog']` |
+| `go -c cat -c dog,bird` | 0 | `['cat', 'dog,bird']` |
+| `go --classes cat,dog` | 0 | `['cat,dog']` |
+| `go --classes` (no value) | 2 | `Option '--classes' requires an argument.` |
+
+Two supporting facts, both stronger than the plan states:
+
+- **`typer.Option()` has no `nargs` parameter at all** in 0.27.2 — variable-length
+  nargs is not merely restricted for options, it is not expressible for one
+  through Typer's public API. (`typer.Option(..., nargs=-1)` raises
+  `TypeError: Option() got an unexpected keyword argument 'nargs'`.)
+- Typer's vendored Click defines no `Option` class of its own; Typer's
+  `TyperOption` subclasses `_click.Parameter` directly.
+
+**Consequence:** the comma value-separator convention (plan § "CLI Layer &
+Conventions" → *Value separator — comma, everywhere*) is sound as specified, and
+the space-separated alternative it rejects is genuinely unimplementable rather
+than merely undesirable. Note rows 4 and 5: **Click does not split on commas** —
+`-c cat -c dog,bird` arrives as `['cat', 'dog,bird']`, so splitting, trimming and
+the `-c cat -c dog,bird` to three-classes composition are Optica's own work in
+the flag layer, not behaviour inherited from the parser. This closes the
+pre-implementation-gate item handed to pass 1 by `notes/build-log.md` § "The
+plan's pre-implementation gate is broader than pass 0's four tasks".
+
+### Typer 0.27.2 vendors Click; `click` is **not** a transitive dependency
+
+**Date:** 2026-09-12
+**How:**
+```
+.venv/Scripts/python.exe -m pip install -e ".[test]"
+.venv/Scripts/python.exe -c "import click"
+.venv/Scripts/python.exe -c "import importlib.metadata as md; print(md.distribution('typer').requires)"
+```
+**Result:** after a clean `pip install -e ".[test]"` into an empty 3.11.9 venv,
+**`import click` raises `ModuleNotFoundError`.** `typer` 0.27.2 declares exactly
+four runtime requirements and Click is not among them:
+
+```
+shellingham>=1.3.0 ; rich>=13.8.0 ; annotated-doc>=0.0.2 ; colorama (Windows only)
+```
+
+Click is instead **vendored** inside the wheel as the private package
+`typer._click` (`typer/_click/{core,exceptions,parser,types,...}.py`, with its
+own `LICENSE.txt`). It carries no `__version__`. The exception tree is reachable
+publicly only through `typer.TyperException`, which the vendored
+`ClickException` subclasses:
+
+```
+typer._click.exceptions.UsageError < ClickException < typer.TyperException < Exception
+typer.BadParameter is typer._click.exceptions.BadParameter   (public re-export)
+typer.Abort       is typer.exceptions.Abort < RuntimeError   (NOT a UsageError)
+```
+
+`typer` publicly re-exports `Abort`, `BadParameter`, `Exit`, `Context`,
+`confirm`, `prompt`, `echo` — but **not** `UsageError`, `MissingParameter`,
+`BadOptionUsage` or `NoSuchOption`.
+
+**Consequence:** two.
+
+1. `CLAUDE.md` § "Settled points" says `click` "arrive[s] transitively through
+   `typer`". **That premise is false for typer 0.27.2.** The conclusion it
+   supports — *do not add `click` to the dependency list* — nonetheless still
+   holds, and more strongly: adding real Click would install a **second,
+   unrelated** `UsageError` class, and Typer would keep raising the vendored one,
+   so every `except click.UsageError` would silently stop firing. Core stays at
+   six packages. See `notes/build-log.md` for the assumption this forced.
+2. The plan writes the handler's contract as `click.UsageError`. There is no
+   importable `click` in a Core install, so the class must come from
+   `typer._click.exceptions`. Pinned by a test that raises a real parser error
+   through the app and asserts it is caught, so a Typer bump that moves the
+   module fails loudly rather than letting tracebacks through.
+
+### `typer.Typer` has no `exception_handler()` method
+
+**Date:** 2026-09-12
+**How:** `python -c "import typer; print([n for n in dir(typer.Typer) if not n.startswith('_')])"`
+**Result:** `['add_typer', 'callback', 'command']` — three methods, and
+`exception_handler` is not one of them. Checked against typer 0.27.2, the version
+pass 0 verified and `pyproject.toml` resolves to. Nor is it a removal: Typer has
+never shipped the method; `app.exception_handler()` is FastAPI's API, not
+Typer's.
+
+`typer.Typer.__call__` forwards `*args, **kwargs` to the Click group object
+returned by `typer.main.get_command(self)`, so `app(standalone_mode=False)`
+reaches Click's `BaseCommand.main(standalone_mode=False)` and exceptions
+propagate to the caller instead of being printed and `sys.exit`-ed by Click.
+
+**Consequence:** the plan names a mechanism that does not exist (plan
+§ "Error handling and prompt conventions", and Implementation Note 1). The
+**behaviour** it specifies is fully implementable and is implemented in full;
+only the spelling changes. See `notes/build-log.md` § "The global exception
+handler's mechanism" for what was built instead, and for why the
+`[project.scripts]` entry point still reads `optica.cli.main:app` as the plan
+requires.
+
+### Which exception each parser-error shape actually raises
+
+**Date:** 2026-09-12
+**How:** `typer.main.get_command(app).main(args=..., standalone_mode=False)` per
+shape, printing `type(e).__mro__` and `e.exit_code`.
+**Result:**
+
+| Invocation shape | Exception | `exit_code` |
+|---|---|---|
+| `--classes` with no value (trailing) | `BadOptionUsage` | 2 |
+| `--classes cat dog` (space-separated) | `UsageError` | 2 |
+| `--nope` (unknown option) | `NoSuchOption` | 2 |
+| `--epochs ten` (non-integer for an int flag) | `BadParameter` | 2 |
+| required option absent entirely | `MissingParameter` | 2 |
+| unknown subcommand | `UsageError` | 2 |
+
+All six are `UsageError` subclasses or `UsageError` itself, so catching at the
+base covers every one — the plan's stated reason for catching at the base,
+confirmed. `UsageError.exit_code` is `2`; plain `ClickException.exit_code` is
+`1`. `typer.Abort` is a `RuntimeError` and is **not** in this tree, exactly as
+the plan requires for its separate `130` handling.
+
+**One plan imprecision, non-blocking:** the plan writes "redirecting to prompts
+where applicable (**`MissingParameter`** on `--classes`)". The class raised by
+`--classes` **with no value** is `BadOptionUsage`, not `MissingParameter`;
+`MissingParameter` is what fires when a *required* parameter is absent entirely.
+Both are `UsageError` subclasses, so the base catch reaches both and the
+specified behaviour is unaffected — the handler routes on both shapes.
+
+### Non-ASCII status glyphs crash on a non-UTF-8 Windows **stdout**
+
+**Date:** 2026-09-12
+**How:** on the build machine (console codepage **cp1255**), under `.venv`:
+```
+python -c "import sys; print(sys.stdout.errors, sys.stderr.errors)"
+python -c "from rich.console import Console; Console().print(chr(0x2713) + ' Done')"
+```
+**Result:** `sys.stdout.errors` is **`surrogateescape`** and `sys.stderr.errors`
+is **`backslashreplace`**. Writing U+2713 to **stdout** raises
+`UnicodeEncodeError: 'charmap' codec can't encode character` — **through Rich as
+well as through `print()`**, since Rich writes to the same stream. The same write
+to **stderr** does not raise; it degrades to a literal escape.
+
+The plan's user-facing marker set is four glyphs: U+2715 (12 uses), U+2713 (8),
+U+2717 (6), U+26A0 (4). The box-drawing characters counted alongside them belong
+to the plan's own diagrams, not to Optica's output.
+
+**Consequence:** an unhandled `UnicodeEncodeError` on a status line is precisely
+the "raw traceback reaching the user" that plan § "Coding Style" forbids, and it
+fires on a default Windows console for output the user did nothing unusual to
+request. `utils/logging.py` therefore resolves the marker set once against the
+target stream's encoding and falls back to ASCII when the glyph cannot be
+encoded. Logged as an assumption in `notes/build-log.md`; the fallback mapping is
+recorded there.
+
+### Installed toolchain snapshot for pass 1
+
+**Date:** 2026-09-12
+**How:** `.venv/Scripts/python.exe -m pip list` after `pip install -e ".[test]"`
+**Result:** Python 3.11.9. Core resolved to typer 0.27.2, rich 15.0.0,
+python-dotenv 1.2.3, pydantic-settings 2.15.0, httpx 0.28.1, pillow 12.3.0 —
+all six inside their declared `>=min,<next_major` bounds. `[test]` resolved to
+pytest 9.1.1, ruff 0.16.7, mypy 2.3.1. Transitive: pydantic 2.13.5 (via
+pydantic-settings, as the plan states), plus annotated-doc, ast-serialize,
+colorama, shellingham, librt, anyio, h11, httpcore, certifi, idna,
+markdown-it-py, mdurl, pygments, typing-extensions, typing-inspection,
+annotated-types, iniconfig, packaging, pathspec, pluggy, mypy-extensions.
+**`click` is absent** — see the vendoring entry above.
+**No torch, torchvision, timm or scikit-learn**, which is what makes pass 1's
+milestone a real check.

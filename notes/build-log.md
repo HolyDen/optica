@@ -276,3 +276,167 @@ change** awaiting a decision; one is a **correction** to an earlier entry in
 this file; the rest are findings handed to later passes.
 **Next:** pass 1 — `exceptions.py`, `utils/`, `config/`, CLI skeleton, the
 **global Typer exception handler first**, exit codes, minimal `ci.yml`.
+
+---
+
+## Pass 1
+
+### The global exception handler's mechanism — `app.exception_handler()` does not exist
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/cli/main.py:OpticaTyper.__call__`
+**Missing:** the plan specifies the handler twice (§ "Error handling and prompt
+conventions", Implementation Note 1) as "a global handler via
+`app.exception_handler()`". **That method does not exist on `typer.Typer`** —
+0.27.2 exposes exactly `add_typer`, `callback`, `command`, and Typer has never
+shipped an `exception_handler`; it is FastAPI's API. Verified in
+`notes/verified.md` § "`typer.Typer` has no `exception_handler()` method".
+**Assumed:** the plan's **behaviour** is implemented in full and only the
+spelling changes. `cli/main.py` defines `OpticaTyper(typer.Typer)` overriding
+`__call__` to run `super().__call__(..., standalone_mode=False)` inside the
+global `try/except`, which is what makes Click propagate exceptions to us
+instead of printing and exiting on its own. The contract the plan states is
+unchanged: `UsageError` caught **at the base** (not a named list), `Abort`
+handled separately at `130`, no raw traceback ever reaching the user.
+**Why:** the alternative — a `main()` wrapper function — would force
+`[project.scripts]` to `optica.cli.main:main`, and the plan fixes that entry
+point as `optica.cli.main:app` in § "Code Structure". Subclassing keeps `app` the
+name the entry point resolves, keeps `@app.command()` working, and puts the
+handler on the one code path every invocation takes. *Rejected: `sys.excepthook`,
+which Typer already owns and overwrites in `Typer.__call__`; and a decorator per
+command, which is the "named list" failure mode the plan rejects, one level up.*
+**Reversible?** Yes — the handler is one method on one class, and the
+exception-to-exit-code mapping it drives is a single table.
+
+### `click` is not importable — the vendored class is the only one Typer raises
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/cli/main.py` imports
+**Missing:** the plan writes the handler's catch as `click.UsageError`, and
+`CLAUDE.md` § "Settled points" justifies excluding `click` from the dependency
+list on the grounds that it "arrive[s] transitively through `typer`". **It does
+not.** typer 0.27.2 vendors Click as the private `typer._click` and declares no
+dependency on it; `import click` fails in a Core install. Verified in
+`notes/verified.md` § "Typer 0.27.2 vendors Click".
+**Assumed:** import `UsageError`, `BadOptionUsage` and `MissingParameter` from
+`typer._click.exceptions`, and treat the private path as a pinned contract rather
+than an incidental detail — `tests/unit/cli/test_main.py` drives a real parser
+error through the app and asserts the handler caught it, so a Typer bump that
+moves the module fails a test instead of silently letting tracebacks through.
+**Why:** `CLAUDE.md`'s instruction (do not add `click`) survives its own broken
+premise, and for a sharper reason than the one given: installing real Click would
+add a **second, unrelated** `UsageError` class while Typer kept raising the
+vendored one, so `except click.UsageError` would stop firing with no error
+anywhere. Core stays at six packages. *Rejected: catching the public
+`typer.TyperException` instead — it is the base of the whole vendored tree, so it
+would also swallow non-usage `ClickException`s and hand them exit `2`, which is
+exactly the over-broad catch the plan's "at the base, not a named list" wording
+exists to get right.*
+**Reversible?** Yes, and cheaply: one import line, guarded by a test that names
+the failure.
+
+### ASCII fallback for the four status glyphs
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/utils/logging.py:Markers`
+**Missing:** the plan's output format uses four non-ASCII markers — U+2715
+(error), U+2713 (success), U+2717 (incomplete), U+26A0 (warning) — and says
+nothing about terminals that cannot encode them.
+**Found:** on this machine (console codepage cp1255) writing U+2713 to **stdout**
+raises `UnicodeEncodeError`, through Rich as well as through `print()`;
+`sys.stdout.errors` is `surrogateescape` while `sys.stderr.errors` is
+`backslashreplace`, so stderr survives and stdout does not. Measured in
+`notes/verified.md` § "Non-ASCII status glyphs crash on a non-UTF-8 Windows
+stdout".
+**Assumed:** `utils/logging.py` tests each glyph once against the target stream's
+encoding and substitutes ASCII where it cannot be encoded — U+2715 to `X`, U+2717
+to `x`, U+2713 to `+`, U+26A0 to `!`. The glyphs are used unchanged wherever the
+stream can carry them, which is every UTF-8 terminal, all three CI runners' UTF-8
+paths, and any redirect to a file opened as UTF-8.
+**Why:** an unhandled `UnicodeEncodeError` on a status line is a raw traceback
+reaching the user, which plan § "Coding Style" forbids unconditionally, and it
+fires on a stock Windows console for output the user did nothing unusual to ask
+for. Windows is a named best-effort target, so "it only breaks on Windows" is not
+a reason to leave it. *Rejected: forcing UTF-8 onto the stream, which produces
+mojibake on a legacy console rather than a crash — quieter, not better; and
+`errors="backslashreplace"` on stdout, which renders a literal escape sequence
+where a mark belongs and is strictly harder to read than `X`.*
+**Reversible?** Yes — one mapping in one module, and no caller spells a glyph
+itself.
+
+### `ExitCode` placed in `exceptions.py`
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/exceptions.py:ExitCode`
+**Missing:** the plan gives the exit-code table but no home for it;
+§ "Code Structure" describes `exceptions.py` as "all exception classes (public +
+internal)", and an `IntEnum` is not an exception class.
+**Assumed:** `ExitCode` lives in `exceptions.py` anyway.
+**Why:** the plan states the codes inside § "Exceptions" itself, in the same
+section as the hierarchy and immediately after the table mapping error families
+to classes — the two are one contract, and the mapping from class to code is
+what `cli/main.py` consumes. The alternative, a home in `cli/main.py`, would put
+the codes behind the CLI layer, which the plan calls "a thin entry point: no
+business logic". *Rejected: a separate `exit_codes.py`, which is the one-concept
+module split that § "Exceptions" gives as its reason for consolidating
+`OpticaWarning` into `exceptions.py`.*
+**Reversible?** Yes — a move plus an import rewrite.
+
+### `utils/prompts.py` added to the plan's `utils/` file list
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/utils/prompts.py`
+**Missing:** `CLAUDE.md` § "Settled points" requires that a declined prompt exit
+`3`, that `click.Abort` exit `130`, and that `confirm(..., abort=True)` never be
+used — and says "this lands in pass 1 and every later command inherits it". The
+plan's `utils/` tree lists four modules (`logging`, `system`, `progress`,
+`lockfile`) and none of them is a prompt layer.
+**Assumed:** a fifth module, `utils/prompts.py`, holding `confirm()` and the
+Y/N conventions, including `--yes` resolution per prompt category (choice /
+safety / destructive) as plan § "Global flags" splits them.
+**Why:** the plan already directs two unplaced things — the `optica.classify.*`
+namespace and the two registries — to "be placed when [they are] built", so
+placing is a sanctioned move rather than a deviation. Prompts do not belong in
+`logging.py`: `--quiet` suppresses logging output and must **not** suppress
+prompts (Implementation Note 19), so keeping them in one module would put the
+verbosity switch and the thing it must not reach behind one import.
+**Reversible?** Yes — the module has one public function and no state.
+
+### `cli/config.py` built in pass 1, minus `--clear-staging`
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/cli/config.py`
+**Missing:** no pass owns `cli/config.py`. `notes/passes/pass-1.md` names only
+`cli/main.py` and "the `classify` skeleton"; passes 2-6 never mention it.
+**Assumed:** built in pass 1 with `--init`, `--set`, `--view` and `--global`,
+which need nothing beyond pass 1's own `config/`. **`--clear-staging` is not
+registered** — plan § "Configuration" puts its deletion logic in the Input
+Manager, which pass 2 builds; the flag arrives with it.
+**Why:** pass 1's "Done when" requires that exit code `3` be reachable, and `3`
+is a declined prompt. **The only V1 prompt whose backing is entirely pass 1's is
+`optica config --init`'s create confirmation** — so without `cli/config.py` the
+pass cannot meet its own milestone. Implementation Note 11 points the same way:
+`--yes` must reach `optica config` to answer that prompt and must not answer the
+destructive overwrite on the same command, and `--yes` is registered globally in
+pass 1. *Rejected: a throwaway prompt somewhere in the skeleton purely to make
+`3` reachable — it would test the plumbing against a fixture rather than against
+the one real prompt the pass can support.*
+**Reversible?** Yes. Registering `--clear-staging` in pass 2 is additive; nothing
+built here needs revisiting.
+
+### `DEFAULT_TASK` stands in for the unbuilt `TASK_REGISTRY`
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/config/defaults.py:DEFAULT_TASK`, `src/optica/cli/main.py`
+**Missing:** plan § "Key Decisions" requires alias resolution to consult
+`default_task` rather than hardcoding `classify`, and § "Configuration" fixes
+`default_task` as a module-level constant rather than a config key in V1. The
+`TASK_REGISTRY` that would map the constant to a command group "[has] no stated
+home" and is built in pass 5.
+**Assumed:** `DEFAULT_TASK = "classify"` in `config/defaults.py`, and `main.py`
+resolves it through a one-entry local mapping from task name to Typer group,
+marked in a comment as the seat `TASK_REGISTRY` takes in pass 5.
+**Why:** it keeps the indirection the plan asks for — `main.py` holds nothing
+classify-specific and never spells `"classify"` as a literal — without building
+pass 5's registry a pass early. The registry then replaces the mapping without
+touching any call site.
+**Reversible?** Yes — that is the point of routing through the constant now.
+
+### Tool configuration added to `pyproject.toml`
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `pyproject.toml` `[tool.ruff]`, `[tool.mypy]`
+**Missing:** `notes/passes/pass-1.md` has CI run bare `ruff check` and `mypy`.
+Neither has a configuration section, and bare `mypy` with no config and no
+argument checks nothing.
+**Assumed:** added `[tool.ruff]` (target `py311`, `src/` + `tests/`) and
+`[tool.mypy]` (`strict`, `files = ["src", "tests"]`, Python 3.11) so both
+commands are meaningful as written. `version` untouched.
+**Why:** "every pass ends Ruff-clean and mypy-clean" is only a real check if the
+tools are told what to look at; a green bare `mypy` that examined no files is the
+kind of vacuous pass this build is trying to avoid.
+**Reversible?** Yes — configuration only, no source depends on it.
