@@ -10,6 +10,14 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+# Python target is 3.11-3.13 (plan § "Tech Stack"). 3.10 is excluded: it reaches
+# end of life on 31 October 2026. No `License ::` classifier -- under PEP 639 the
+# SPDX `license` field above supersedes it.
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 
 # Tier 1 — Core. Required for `pip install optica` to be minimally functional.
 # Pillow is Core because `optica fetch` needs it unconditionally for image validation.
@@ -48,3 +56,14 @@ optica = "optica.cli.main:app"
 
 [project.urls]
 Homepage = "https://github.com/HolyDen/optica"
+
+# The specification and the working notes are repo-only: they are authority for
+# how Optica gets built, not artifacts a user of the package needs.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "spec/",
+    "notes/",
+]
+
+[tool.pytest.ini_options]
+markers = ["slow: requires torch"]
