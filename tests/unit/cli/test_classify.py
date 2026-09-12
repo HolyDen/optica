@@ -1,15 +1,16 @@
 """The ``classify`` command group and the flat aliases.
 
 Covers plan § "CLI Layer & Conventions" → *Commands*, *Namespacing and
-aliases*, *Global flags*, *Value separator — comma, everywhere*, and the
-*CLI Flag Reference (V1)*.
+aliases*, *Global flags*, and the *CLI Flag Reference (V1)*.
+
+The comma value separator is tested where it is implemented, in
+``tests/unit/cli/test_init.py``.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from optica.cli import split_values
 from optica.cli.main import app
 from optica.config.defaults import DEFAULT_TASK
 from optica.exceptions import ExitCode
@@ -65,32 +66,6 @@ class TestCommandSurface:
     def test_setup_is_not_registered_yet(self):
         # cli/setup.py is pass 5.
         assert "setup" not in _commands()
-
-
-class TestSplitValues:
-    """Plan § *Value separator — comma, everywhere*."""
-
-    def test_comma_separated(self):
-        assert split_values(["cat,dog"]) == ["cat", "dog"]
-
-    def test_repeated_flag(self):
-        assert split_values(["cat", "dog"]) == ["cat", "dog"]
-
-    def test_the_two_compose(self):
-        # The plan's own example: -c cat -c dog,bird yields three classes.
-        assert split_values(["cat", "dog,bird"]) == ["cat", "dog", "bird"]
-
-    def test_whitespace_is_trimmed(self):
-        assert split_values([" cat , dog "]) == ["cat", "dog"]
-
-    def test_multi_word_values_survive(self):
-        assert split_values(["orange cat,dog"]) == ["orange cat", "dog"]
-
-    def test_a_trailing_comma_is_not_a_value(self):
-        assert split_values(["cat,dog,"]) == ["cat", "dog"]
-
-    def test_absent_flag_gives_an_empty_list(self):
-        assert split_values(None) == []
 
 
 class TestFixedValueFlags:

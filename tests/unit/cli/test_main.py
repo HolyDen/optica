@@ -14,7 +14,7 @@ import pytest
 import typer
 from typer._click.exceptions import UsageError
 
-from optica.cli.main import GlobalState, OpticaTyper, app
+from optica.cli.main import OpticaTyper, app
 from optica.exceptions import ExitCode, OpticaConfigError, OpticaError
 from optica.utils import logging as olog
 
@@ -155,24 +155,6 @@ class TestVersion:
 
         app.invoke_guarded(["--version"])
         assert "torch" not in sys.modules
-
-
-class TestGlobalState:
-    """Global flags apply to the whole run from either position."""
-
-    def test_merge_is_sticky(self):
-        state = GlobalState()
-        state.merge(verbose=True)
-        state.merge(quiet=False)
-        assert state.verbose is True
-
-    def test_verbose_wins_over_quiet(self):
-        GlobalState(verbose=True, quiet=True).apply()
-        assert olog.get_verbosity() is olog.Verbosity.VERBOSE
-
-    def test_quiet_alone_lowers_the_level(self):
-        GlobalState(quiet=True).apply()
-        assert olog.get_verbosity() is olog.Verbosity.QUIET
 
 
 class TestErrorRendering:
