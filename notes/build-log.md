@@ -440,3 +440,83 @@ commands are meaningful as written. `version` untouched.
 tools are told what to look at; a green bare `mypy` that examined no files is the
 kind of vacuous pass this build is trying to avoid.
 **Reversible?** Yes — configuration only, no source depends on it.
+
+### The lock-file conflict raises `OpticaError` directly
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/utils/lockfile.py:acquire_lock`
+**Missing:** Implementation Note 2 specifies the hard block and its exact
+message but assigns it no exception class, and the "Every hard error carries a
+class" table in § "Exceptions" has no family that covers it. The lock is not an
+input-contract violation, not a config value, and not any named subsystem's
+contract.
+**Assumed:** `OpticaError` is raised directly, with the plan's message split
+across the three parts (`message` / `why` / `fix`) that `render_error` prints.
+**Why:** the plan sanctions exactly this — *"`OpticaError` is raised directly
+only where no subsystem's contract is the one violated, which is a signal the
+hierarchy is missing a class rather than a licence to use the base class
+routinely"* — and this is that signal, unanswered. The alternative, filing it
+under `OpticaValidationError`, would stretch "the input contract" to cover a
+concurrency guard and blur the one class the plan deliberately bounds.
+*Rejected: adding `OpticaLockError`, which would contradict the flat hierarchy's
+exhaustive enumeration in a pass that has no authority to extend it.*
+**Recommendation for the post-V1 pass:** `OpticaLockError` is the missing class.
+Exit code is unaffected either way — both are `1`.
+**Reversible?** Yes — one constructor call and one test.
+
+### Windows PID liveness cannot use `os.kill(pid, 0)`
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `src/optica/utils/lockfile.py:pid_is_live`
+**Missing:** Implementation Note 2 requires distinguishing a live PID from a dead
+one and says nothing about how.
+**Found:** the POSIX idiom is `os.kill(pid, 0)`, which sends no signal and only
+runs the error checks. **On Windows CPython maps `os.kill` onto
+`TerminateProcess` for every signal except `CTRL_C_EVENT` and
+`CTRL_BREAK_EVENT`,** so the "harmless" probe would kill the process it was
+asking about — including, on a PID collision, a process belonging to something
+else entirely.
+**Assumed:** two implementations selected by `sys.platform` at import: POSIX uses
+`os.kill(pid, 0)`; Windows opens a `PROCESS_QUERY_LIMITED_INFORMATION` handle via
+`ctypes` and reads `GetExitCodeProcess`, which observes without signalling. The
+platform branch is at module level rather than inside the function so that mypy
+checks the live branch on each of the three CI runners and skips the other.
+**Why:** Windows is a named best-effort target and this is the development
+platform, so the wrong idiom here would be exercised constantly and would fail
+destructively rather than visibly.
+**Known limit, not resolved:** PID reuse. A dead run's PID can be reallocated to
+an unrelated process, which would read as a live lock. The lock's stored command
+name makes the misreport legible in the error but does not prevent it; the plan's
+own note that per-project scoped locks are post-V1 is the place that belongs.
+**Reversible?** Yes — one function.
+
+### `--classes` followed by another flag binds that flag as its value
+**Pass:** 1   **Date:** 2026-09-12   **Where:** affects `input/` class-name parsing (pass 2)
+**Missing:** plan § *Flag (no value) behavior* says `--classes` with no value
+surfaces the class-name prompt. It does not say what "no value" means to the
+parser.
+**Found:** Click takes the **next token** as an option's value whatever it looks
+like. `optica fetch --classes --yes` therefore parses cleanly with
+`classes == ["--yes"]` and no error at all, so the handler's redirect never
+fires. Only a **trailing** `--classes` raises `BadOptionUsage`, which is the case
+pass 1's handler covers. Verified in `notes/verified.md` § "Which exception each
+parser-error shape actually raises".
+**Assumed:** pass 1 handles the trailing case, which is the one the plan
+describes. **Handed to pass 2**, which owns the filesystem-safe class-name rules
+and is the right place to reject a name that is a flag spelling — a leading `-`
+is not a plausible class name, and pass 2 already rejects names on
+character-level rules.
+**Why not fixed here:** the flag layer sees a syntactically valid value; only
+name validation can tell that it is wrong, and name validation is pass 2's.
+**Reversible?** Yes — it is one predicate in the name rules.
+
+### `tests/` is a package
+**Pass:** 1   **Date:** 2026-09-12   **Where:** `tests/**/__init__.py`
+**Missing:** `CLAUDE.md` § "Tests" fixes the layout (`tests/unit/` mirrors the
+source tree, `tests/integration/`, `tests/conftest.py`) but not whether the
+directories carry `__init__.py`.
+**Assumed:** they do.
+**Why:** two reasons, both mechanical. `tests/unit/` mirrors `src/optica/`, so
+same-named modules in different mirrored directories are guaranteed — a
+`tests/unit/utils/test_logging.py` and a future `tests/unit/server/test_routes.py`
+are fine, but the mirror makes collisions a matter of time, and without packages
+pytest's import mode cannot hold two modules of one name. Second, mypy scopes
+per-directory settings by module path, so the `tests.*` override that relaxes
+`disallow_untyped_defs` for test signatures has nothing to match without them.
+**Reversible?** Yes, but the collision hazard returns with it.
