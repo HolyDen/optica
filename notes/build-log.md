@@ -1699,3 +1699,163 @@ messages (stderr) are unaffected apart from escapes.
 - **Entries logged this pass:** 19 at close, plus 7 here = **26**. The 7: 2 stale
   pass prompts, 1 record (the manifest loop), 1 set of late-logged assumptions,
   3 corrections — one of which (`FORCE_COLOR`) is also a fix.
+
+### Unencodable user text on stdout — fixed, alongside the status-glyph fallback
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/utils/logging.py:protect_streams`, `src/optica/cli/main.py:OpticaTyper.__call__`
+**Decided:** by the user, after the correction entry above left it open.
+**The defect:** text Optica prints but does not choose the characters of — a
+class name, a path, an Open Images display name — raised `UnicodeEncodeError` on
+a stdout that could not encode it. Reached with valid input:
+`optica fetch -c café,dog --dry-run` on this machine's cp1255 stdout exited 1
+with *"Optica hit an unexpected error … This is a bug in Optica"*; `café` passes
+both class-name rules. The same text on a replaced stderr produced a **raw
+Python traceback**, because the failure happened inside the handler's own
+`render_error`.
+
+**Two mechanisms, two problems — why both exist.** This is not pass 1's decision
+revisited; it is a problem pass 1's mechanism was never for.
+- **Status glyphs → `Markers`, unchanged.** The four glyphs each have a good
+  ASCII equivalent: `✓` is `+`, `✕` is `X`. Where the stream cannot encode one,
+  showing its equivalent is strictly better than any stream-level rendering, and
+  that is why pass 1 chose per-glyph fallback over `backslashreplace` for them.
+  That reasoning still holds and nothing about the glyphs changed; a test pins
+  the four fallbacks.
+- **User text → `protect_streams`, new.** A class name has no ASCII equivalent —
+  there is nothing to transliterate `黑猫` to — so a per-character table cannot
+  exist. The only honest rendering is an escape (`\u9ed1\u732b`), and an escape
+  in the output beats a command that fails. The stream's error handler is set to
+  `backslashreplace`; its encoding is not touched.
+- **They compose rather than overlap:** `Markers` resolves the glyphs before text
+  reaches the stream, so a glyph never needs the escape; the escape only ever
+  applies to text that has no other rendering.
+
+**Why stderr already escaped and stdout raised — incidental, not by
+construction.** Measured and sourced in `notes/verified.md` § "Why stderr
+escapes and stdout raises":
+- CPython forces the interpreter-created `sys.stderr` to `backslashreplace` — the
+  Python 3.11 docs: *"For stderr, the `:errorhandler` part is ignored; the handler
+  will always be `'backslashreplace'`."* Even `PYTHONIOENCODING=ascii:strict`
+  leaves it there. stdout gets no such guarantee: `surrogateescape` on this
+  machine by default, `strict` under `PYTHONIOENCODING`.
+- So stderr was safe **by CPython's construction, not Optica's**. Nothing in
+  Optica set that handler or relied on it knowingly. And it was one ordinary act
+  away from the same crash: replacing `sys.stderr` with a `TextIOWrapper` — what
+  an embedding application, a logging harness, or a test runner does — gives the
+  default handler `strict`, and `err_console.print` then raised (measured). It
+  also rested on Rich writing text through the stream rather than encoding
+  itself, which is Rich's implementation, not its contract — the "one dependency
+  bump away" risk.
+- **Now by construction:** `protect_streams` is applied to **both** streams, so
+  the escape no longer depends on who created stderr or on Rich's write path.
+
+**Where it applies — the CLI only.** Called from `OpticaTyper.__call__`, the
+console-script path. Not from `invoke_guarded`, and never on import: the Python
+API (pass 5) must not reconfigure a host process's streams, which it does not
+own. A stream already on a non-raising handler, or one without `reconfigure`,
+is left alone.
+
+**Tests — the condition is constructed, never the runner's.** This is the third
+time this build has met a test that depends on an ambient environment fact
+(`running_in_venv` in pass 1, `FORCE_COLOR` above). Neither test here reads the
+runner's code page:
+- `tests/unit/utils/test_logging.py::TestUnencodableUserText` builds the stream
+  itself — `io.TextIOWrapper(BytesIO(), encoding="ascii", errors="strict")` —
+  with a control test proving that stream raises before protection.
+- `tests/integration/test_output_encoding.py` runs the real entry point in a
+  child: stdout made strict ASCII with `PYTHONIOENCODING=ascii:strict` (documented
+  to apply to pipes on every platform), stderr replaced in the child by a strict
+  ASCII `TextIOWrapper`. Three controls: the child's stdout really reports
+  `ascii strict`; the class name is not blocklisted; and the child's source is
+  ASCII-only (`assert source.isascii()`, names passed with `!a`), so how a
+  non-ASCII command-line argument is encoded — which differs between Windows and
+  POSIX — is not what varies.
+- **A control that mattered:** the first draft used `猫`. The plan blocklists
+  "single characters", so the fetch stopped at the CLIP entry check before
+  printing any class name — the stdout test was failing for the wrong reason and
+  would have passed without ever reaching the encoding path. Caught by reading
+  *why* it failed, not just that it did; now `黑猫`, with a test asserting it is
+  not blocklisted.
+**Fails without the fix, passes with it — shown on the final code:** with
+`logging.py` and `main.py` stashed, `test_output_encoding.py` gave **2 failed, 3
+passed** — the stdout test with *"unexpected error: UnicodeEncodeError: 'ascii'
+codec"*, the stderr test with a raw `Traceback` — and **5 passed** restored. The
+6 unit tests likewise. **Verified here on Windows only;** the construction is
+platform-independent by design, and Linux and macOS confirmation is the CI run.
+**Live, on this machine's real cp1255 console:** `optica fetch -c café,dog
+--dry-run` → exit 0, `Classes: caf\xe9, dog`; `optica fetch -c 黑猫,dog --dry-run`
+→ exit 0, `Classes: \u9ed1\u732b, dog`; a real fetch still ends `+ Fetch
+complete…`, glyph fallback intact.
+**Still open, and a different problem:** the em dash renders `�` in Git Bash. It
+*is* encodable in cp1255; the terminal misreads the bytes. No error handler can
+fix a mismatch between what the stream writes and what the terminal decodes.
+
+### Correction — the framing of the stdout-encoding entry
+**Pass:** 2   **Date:** 2026-09-13   **Corrects:** *"Correction — the em-dash finding had the wrong mechanism; the real defect is wider"*, above.
+That entry framed the fix as re-deciding "a settled pass-1 choice" and each fix
+option as "one pass 1 considered and rejected". That was wrong. Pass 1 rejected
+stream-level handling **for the four status glyphs**, where a per-glyph ASCII
+equivalent exists and is better. Arbitrary user text has no such equivalent.
+Different problem, different tool — see the entry above, under which both
+mechanisms now coexist.
+
+### Pass 2 — closed (final)
+**Date:** 2026-09-13
+**Supersedes** *"Pass 2 — closed"* and *"Correction to the pass 2 close
+entry"*, above, for everything this entry states. Their per-item milestone
+breakdown and the build table stand.
+
+**Commits this pass: 19** (`01812e9..HEAD`, this entry's commit included):
+10 `feat`, 3 `fix`, 1 `test`, 1 `chore`, 4 `docs`
+(10 + 3 + 1 + 1 + 4 = 19).
+
+| # | Commit | Kind |
+|---|---|---|
+| 1 | `docs(verified)`: Flickr API and Open Images acquisition checks | docs |
+| 2 | `feat(input)`: class-name rules, blocklist, class sequence | feat |
+| 3 | `feat(input)`: image validation pipeline | feat |
+| 4 | `feat(input)`: labeling and curation session stores | feat |
+| 5 | `feat(input)`: Local Adapter — folders, datasets, manifests | feat |
+| 6 | `feat(input)`: Open Images class list and candidate index | feat |
+| 7 | `feat(input)`: Fetch Adapter, source registry, staging writes | feat |
+| 8 | `docs(build-log)`: assumptions for the input modules | docs |
+| 9 | `feat(input)`: Curation Adapter staging, selection, thresholds | feat |
+| 10 | `feat(input)`: Input Manager detection, conflict, staging | feat |
+| 11 | `feat(cli)`: `optica fetch` end to end | feat |
+| 12 | `feat(cli)`: `optica config --clear-staging` | feat |
+| 13 | `test(config)`: `clip_threshold` band stubs made real | test |
+| 14 | `fix(prompts)`: Windows `NUL` is not a terminal | fix |
+| 15 | `chore(input)`: the two `TODO(test)` markers | chore |
+| 16 | `docs(build-log)`: close pass 2 | docs |
+| 17 | `fix(tests)`: stop asserting colour was not forced | fix |
+| 18 | `fix(logging)`: unencodable user text escapes instead of raising | fix |
+| 19 | `docs(build-log)`: close pass 2 (final) | docs |
+
+**Milestone — met.** Read against the plan (`pass-2.md`'s "produces a manifest"
+is a stale pass prompt): *`optica fetch` runs end to end.* Live, from
+`.smoke/pass2-fetch/`: `optica fetch -c cat,dog -i 10 --yes`, exit 0, 20 valid
+images staged (cat 10 / 794,749 B, dog 10 / 1,155,119 B; 1,949,868 B total),
+lock released. Rerun, top-up, `--dry-run`, `--classes --yes`, unattended
+refusal and non-ASCII class names all re-checked live since.
+**CI:** pushed by the human; **result pending**. Nothing here claims green.
+
+**State:** **879 tests collected — 866 passed, 13 skipped** (13 = 5 pass-4 stubs +
+6 pass-5 stubs + 2 `_NO_LOGIC`; 866 + 13 = 879 = 868 at the previous close + 6
+unit + 5 integration). Passes in this shell as-is, `FORCE_COLOR=3` inherited.
+Ruff clean; mypy `strict` clean on 60 files.
+
+**Handed forward:**
+
+| To | Item | Where it is recorded |
+|---|---|---|
+| **Pass 3** | `pass-3.md`'s "write back through the manifest" is stale. Both pages write back through the session files (`LabelingSession.save`, `CurationSession.save`), then `copy_into_dataset` / `materialize_selection`. **Never write to a manifest:** it violates l.672, and it changes the manifest's content hash — and the session ID is path + content hash (Note 14). Verified in pass 2: appending one row gave a **different session file**. The user's labeling progress would sit orphaned in `~/.optica/staging/labeling/` while a blank session started, with no error and nothing to tell them why. | § "Stale pass prompt — `pass-3.md`…"; § "Closing the loop on 'manifest'" |
+| **Pass 3** | The server calls `input/curation.py` (view, thresholds, mass rejection, materialize) and `sessions.py` rather than reimplementing them. | `input/curation.py` docstring |
+| **Pass 3** | Header-only pre-flight passes a JPEG cut in half; expect thumbnails that fail to render. | § "Header-only pre-flight…" |
+| **Passes 3 and 4** | The `dataset/` conflict prompt is built in `manager.py` but no pass-2 command writes `dataset/`, so no CLI path prompts yet: `label`/`curate` materialization (3), `fetch --mode clip` (4). | close entry, Left open |
+| **Pass 4** | `input/clip.py`: `fetch --mode clip` and grouped blocklist classes pass every entry check and stop at "CLIP filtering is not available in this build". Truncated JPEGs surface as decode errors at training. | close entry; § "Header-only pre-flight…" |
+| **Pass 5** | `optica run` sequencing (pre-checks and mode line only so far). The Python API must **not** call `protect_streams` — CLI only. | close entry; § "Unencodable user text on stdout" |
+| **Any pass with a key / live budget** | Flickr adapter never exercised with a real key; rare-class Open Images cost model computed, not measured. Both marked `TODO(test)`. | § "Fetch loop parameters"; § "Open Images … strategy" |
+| **The next pass touching `utils/logging.py`** | Em-dash `�` in Git Bash — an encode/decode mismatch, not an error; not fixable by error handler. | § "Unencodable user text on stdout", last paragraph |
+| **Human** | Proposed plan change: class-name rule 1 misses trailing dot/space and control characters. | § "Proposed plan change — class-name rule 1…" |
+
+**Entries logged this pass: 29** = 19 at the first close + 7 after it + 3 here
+(the stdout-encoding fix, the framing correction, this close).
