@@ -34,6 +34,7 @@ __all__ = [
     "get_verbosity",
     "markers_for",
     "out_console",
+    "protect_streams",
     "render_error",
     "set_verbosity",
     "status",
@@ -185,6 +186,48 @@ def render_error(exc: OpticaError) -> None:
         err_console.print(f"  Valid options: {', '.join(exc.options)}")
     if exc.default is not None:
         err_console.print(f"  Default: {exc.default}")
+
+
+_NON_RAISING: Final = frozenset(
+    {"backslashreplace", "replace", "ignore", "xmlcharrefreplace", "namereplace"}
+)
+
+
+def protect_streams(*streams: object) -> None:
+    """Make text a stream cannot encode degrade to an escape instead of raising.
+
+    The **second** of two mechanisms for characters a stream cannot encode, and
+    they solve different problems. :class:`Markers` handles the four status
+    glyphs, which each have a good ASCII stand-in (``✓`` becomes ``+``); it runs
+    first, so a glyph never reaches the stream unencodable. This handles
+    everything else Optica prints — class names, paths, Open Images display
+    names — which is the user's text and has no stand-in: there is nothing to
+    transliterate a class name in a non-Latin script to. For that text an escape
+    (a backslash-u code per character) is the only honest rendering, and it beats
+    a failed command.
+
+    Only the error handler changes; the encoding is kept. A stream already on a
+    non-raising handler, or one that cannot be reconfigured (a caller's own
+    object), is left alone.
+
+    Called by the CLI entry point only. The Python API never reconfigures a
+    caller's streams: a library that changed its host process's stdout on import
+    or on call would be reaching into state it does not own.
+
+    Args:
+        streams: The streams to protect. Defaults to ``sys.stdout`` and
+            ``sys.stderr``.
+    """
+    for stream in streams or (sys.stdout, sys.stderr):
+        if getattr(stream, "errors", None) in _NON_RAISING:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="backslashreplace")
+        except (ValueError, OSError):  # a closed or detached stream
+            continue
 
 
 def get_logger(name: str) -> logging.Logger:

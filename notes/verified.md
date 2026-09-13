@@ -1006,3 +1006,40 @@ bullet are **not** encoding failures — they encode, and the bytes are misread 
 a UTF-8 terminal behind a pipe. `→` and `é` **are** encoding failures, and on
 stdout they raise. See `notes/build-log.md` § "Correction — the em-dash finding
 had the wrong mechanism".
+
+### Why stderr escapes and stdout raises — CPython's stream error handlers
+
+**Date:** 2026-09-13
+**How:**
+```
+https://docs.python.org/3.11/using/cmdline.html#envvar-PYTHONIOENCODING
+python -c "import sys; print(sys.stdout.errors, sys.stderr.errors)"                               # pipes, no overrides
+PYTHONIOENCODING=ascii        python -c "import sys; print(sys.stdout.errors, sys.stderr.errors)"
+PYTHONIOENCODING=ascii:strict python -c "import sys; print(sys.stdout.errors, sys.stderr.errors)"
+PYTHONIOENCODING=ascii:strict python -c "from optica.utils import logging as olog; olog.err_console.print('Got: 猫')"
+python -c "import io,sys; sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='ascii', line_buffering=True); from optica.utils import logging as olog; olog.err_console.print('Got: 猫')"
+```
+Python 3.11.9, `.venv`, stdout and stderr pipes.
+**Result — documented:** the `PYTHONIOENCODING` entry reads, verbatim: *"For
+stderr, the `:errorhandler` part is ignored; the handler will always be
+`'backslashreplace'`."* It also says the Windows interactive-console exception
+does not apply to "Files and pipes redirected through the standard streams".
+
+**Result — measured:**
+
+| Condition | `stdout.errors` | `stderr.errors` | `err_console.print('Got: 猫')` |
+|---|---|---|---|
+| pipes, no overrides | `surrogateescape` | `backslashreplace` | — |
+| `PYTHONIOENCODING=ascii` | `strict` | `backslashreplace` | — |
+| `PYTHONIOENCODING=ascii:strict` | `strict` | **`backslashreplace`** (the `:strict` is ignored) | prints `Got: 猫`, exit 0 |
+| `sys.stderr` replaced by `TextIOWrapper(…, encoding='ascii')` | — | `strict` (the default for a new wrapper) | **`UnicodeEncodeError`**, exit 1 |
+
+**Consequence:** stderr's degradation is guaranteed by CPython **for the
+interpreter-created `sys.stderr` only**. It is incidental to Optica — nothing in
+Optica set it — and it is lost the moment anyone replaces `sys.stderr` with an
+ordinary text wrapper, whose default handler is `strict`. It also depends on Rich
+writing text through the stream rather than encoding bytes itself, which is
+Rich's current implementation (`rich/_win32_console.py` `write_text` →
+`file.write`), not a documented contract. `PYTHONIOENCODING=ascii:strict` is a
+reliable, documented way to make **stdout** strict ASCII on pipes on every
+platform, which is what `tests/integration/test_output_encoding.py` uses.

@@ -87,6 +87,11 @@ class OpticaTyper(typer.Typer):
 
     def __call__(self, *args: Any, **kwargs: Any) -> NoReturn:
         """Run the command line and exit with the code the handler chose."""
+        # User text with no ASCII equivalent (a class name, a path) must not
+        # fail a command on a narrow stream. Here and not in `invoke_guarded`:
+        # this is the console-script path, and a caller driving the app
+        # programmatically keeps its own streams untouched.
+        olog.protect_streams()
         argv = kwargs.pop("args", None)
         argv = list(argv) if argv is not None else list(sys.argv[1:])
         raise SystemExit(self.invoke_guarded(argv, **kwargs))

@@ -6,6 +6,8 @@ Implementation Note 19 (verbosity governs progress and status output only).
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
 from optica.exceptions import OpticaError
@@ -36,6 +38,67 @@ class TestMarkers:
 
     def test_missing_encoding_falls_back(self):
         assert olog.Markers(None).error == "X"
+
+
+class TestUnencodableUserText:
+    """Text with no ASCII equivalent degrades to an escape instead of raising.
+
+    A different problem from ``TestMarkers``: a status glyph has an ASCII
+    stand-in and keeps it, but a class name such as 猫 has none. The stream is
+    built here with ``encoding="ascii"`` so the condition is the same on every
+    runner, whatever its code page. See ``notes/build-log.md`` § "Unencodable
+    user text on stdout".
+    """
+
+    @staticmethod
+    def _strict_ascii() -> tuple[io.BytesIO, io.TextIOWrapper]:
+        raw = io.BytesIO()
+        return raw, io.TextIOWrapper(raw, encoding="ascii", errors="strict", newline="\n")
+
+    def test_the_unprotected_stream_raises(self):
+        # The control: proves the stream really cannot encode it, so the test
+        # below is not passing vacuously.
+        _, stream = self._strict_ascii()
+        with pytest.raises(UnicodeEncodeError):
+            stream.write("Classes: 猫, dog\n")
+            stream.flush()
+
+    def test_protected_streams_escape_instead_of_raising(self):
+        raw_out, out = self._strict_ascii()
+        raw_err, err = self._strict_ascii()
+        olog.protect_streams(out, err)
+        for stream in (out, err):
+            stream.write("Classes: 猫, dog → café\n")
+            stream.flush()
+        expected = b"Classes: \\u732b, dog \\u2192 caf\\xe9\n"
+        assert raw_out.getvalue() == expected
+        assert raw_err.getvalue() == expected
+
+    def test_encodable_text_is_untouched(self):
+        raw, stream = self._strict_ascii()
+        olog.protect_streams(stream)
+        stream.write("cat: 10 images\n")
+        stream.flush()
+        assert raw.getvalue() == b"cat: 10 images\n"
+
+    def test_the_encoding_is_not_changed(self):
+        _, stream = self._strict_ascii()
+        olog.protect_streams(stream)
+        assert stream.encoding == "ascii"
+        assert stream.errors == "backslashreplace"
+
+    def test_a_stream_that_cannot_be_reconfigured_is_left_alone(self):
+        class Plain:
+            def write(self, text: str) -> int:
+                return len(text)
+
+        olog.protect_streams(Plain())  # must not raise
+
+    def test_the_status_glyph_fallback_is_unchanged(self):
+        # Both mechanisms coexist: the glyphs still resolve to their ASCII
+        # stand-ins before the stream ever sees them.
+        marks = olog.Markers("ascii")
+        assert (marks.error, marks.fail, marks.ok, marks.warn) == ("X", "x", "+", "!")
 
 
 class TestVerbosity:
