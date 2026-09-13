@@ -412,6 +412,9 @@ def _parse_metadata_line(line: bytes) -> tuple[str, str] | None:
     return row[10].strip(), row[2].strip()
 
 
+# TODO(test): a live test of a rare class (e.g. Screwdriver, ~100 labelled
+# images) to confirm the cost model in notes/build-log.md — bytes read and time
+# — which is computed, not measured end to end. Only Cat and Dog were run live.
 class OpenImagesIndex:
     """Find candidate image URLs for Open Images classes.
 

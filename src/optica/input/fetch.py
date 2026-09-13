@@ -238,6 +238,9 @@ class FlickrSource:
     real key.
     """
 
+    # TODO(test): exercise against a real FLICKR_API_KEY — a search, paging past
+    # page 1, a real rate-limit response (its shape is undocumented), and a
+    # url_z download. Every Flickr test today runs against recorded shapes only.
     name = "flickr"
     display_name = "Flickr"
 
