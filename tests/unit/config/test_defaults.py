@@ -166,17 +166,37 @@ class TestEnvVarNames:
 
 
 class TestPlanValuesStillToImplement:
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_clip_threshold_strict_end_prompt_band(self):
-        """0.75 to <1.0 raises a Y/n prompt: very strict, few images pass."""
+    # The three hard-error bands are this module's (``NUMERIC_DOMAINS``); the
+    # prompt and the two warnings belong to the command about to use the value,
+    # and were built in pass 2 in ``optica.input.manager``. Full band table:
+    # tests/unit/input/test_manager.py::TestClipThresholdBands.
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_clip_threshold_warn_and_continue_bands(self):
+    @pytest.mark.parametrize("value", [0.75, 0.9, 0.999])
+    def test_clip_threshold_strict_end_prompt_band(self, value):
+        """0.75 to <1.0 raises a Y/n prompt: very strict, few images pass."""
+        from optica.input.manager import check_clip_threshold
+
+        assert defaults.NUMERIC_DOMAINS["clip_threshold"].contains(value)
+        check = check_clip_threshold(value, command="fetch")
+        assert check.prompt is not None
+        assert check.warning is None
+
+    @pytest.mark.parametrize(
+        ("value", "warns"),
+        [(0.05, True), (0.0999, True), (0.1, False), (0.25, False), (0.4999, False),
+         (0.5, True), (0.7499, True)],
+    )  # fmt: skip
+    def test_clip_threshold_warn_and_continue_bands(self, value, warns):
         """Two bands warn and continue.
 
         0.5 to <0.75 and >0.0 to <0.1 warn; 0.1 to <0.5 is normal, with no
         warning.
         """
+        from optica.input.manager import check_clip_threshold
+
+        check = check_clip_threshold(value, command="fetch")
+        assert (check.warning is not None) is warns
+        assert check.prompt is None
 
     @pytest.mark.skip(reason="stub - pass 4")
     def test_finetune_ratio_extremes_warn(self):
