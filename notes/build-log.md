@@ -1399,3 +1399,111 @@ to `pass-0.md` and `pass-4.md`).
 `.fetch.json` sidecars (candidate keys tried and images delivered, per source and
 query — logged above), which are internal bookkeeping, not a user-facing
 manifest. Say which is wanted and it is a small, separate change.
+
+### Pass 2 — closed
+**Date:** 2026-09-13
+**Built:** `src/optica/input/` except `clip.py` — 9 modules:
+
+| Module | Holds |
+|---|---|
+| `__init__.py` | package docstring (exempt in `_NO_LOGIC`) |
+| `classes.py` | both class-name rules (incl. amended leading `-`), class count, blocklist, auto-mode class sequence |
+| `validation.py` | per-file stages, conversion, 128px resize, `_x` suffixes, MD5 dedupe, floors, imbalance |
+| `sessions.py` | labeling session file and `curation.json`, atomic writes, version checks |
+| `local.py` | flat folders, organized datasets, manifests, copy/materialize |
+| `openimages.py` | class list (MD5-verified cache) and the per-class candidate index |
+| `fetch.py` | source registry, Open Images and Flickr adapters, downloader, fill-to-target into `.partial` staging |
+| `curation.py` | staging view, selection thresholds, mass rejection, materializing a selection |
+| `manager.py` | single input source, mode resolution, detection order, `dataset/` conflict state, asymmetric `--classes`, `clip_threshold` bands, soft cap, staging list/clear |
+
+Plus the CLI wiring the milestone needs: `optica fetch` end to end,
+`optica config --clear-staging`, the shared class-name prompt, and the
+preconditions `label`, `curate` and `run` check before the stages later passes
+build. Two pass-1 defects fixed where pass 2 exposed them (entries above).
+
+**Milestone:** *"`optica fetch` runs end to end and produces a manifest."*
+- **`optica fetch` runs end to end — met, live.** From `.smoke/pass2-fetch/`
+  with `HOME`/`USERPROFILE` inside it: `optica fetch -c cat,dog -i 10 --yes`
+  exited **0** in 81.3 s — class list downloaded and MD5-verified, 64.0 MiB of
+  labels and 38.1 MiB of metadata read, 20 images staged. Per item:
+
+  | Class | Files | Distinct MD5 | Bytes | Candidates tried | Delivered | Not delivered |
+  |---|---|---|---|---|---|---|
+  | cat | 10 | 10 | 794,749 | 12 | 10 | 2 |
+  | dog | 10 | 10 | 1,155,119 | 13 | 10 | 3 |
+  | **Total** | **20** | **20** | **1,949,868** | **25** | **20** | **5** |
+
+  All 20 decode as JPEG, named `0001.jpg`–`0010.jpg` per class; no `.partial`
+  left; lock released. Follow-up live checks: re-running took 1.0 s and
+  downloaded nothing (cache and staging reused); `-i 12` topped each class up to
+  `0011`/`0012`; `--classes --yes` exit 1 naming `'--yes'`; `--dry-run` exit 0,
+  nothing written; unattended fetch without `--yes` and unattended
+  `--clear-staging --yes` both exit 1 with staging intact — **after** the
+  `is_interactive` fix, having first exited 130.
+- **"and produces a manifest" — not met as written, deliberately.** The plan
+  specifies no manifest output for fetch; see the entry above. Awaiting a human
+  decision on whether one was meant.
+- **CI — not run.** `git push` is denied to the agent. Pass 1's close records
+  what claiming green without a run cost; nothing here claims it. A human pushes
+  `build/v0.2.0` and confirms the three runners before pass 3.
+- Ruff clean; mypy `strict` clean on 59 files.
+
+**State now:** **868 tests collected — 855 passed, 13 skipped.** The 13 are 5
+pass-4 stubs + 6 pass-5 stubs + 2 `_NO_LOGIC` exemptions (5 + 6 + 2 = 13); all
+14 pass-2 stubs were turned into real tests, leaving pass 1's 25 − 14 = 11.
+Runs with `FORCE_COLOR`/`COLORTERM` unset (entry above). Source is 25 files
+(pass 1's 16 + 9); test modules 26 (pass 1's 17 + 8 in `tests/unit/input/` +
+`tests/unit/cli/test_fetch_command.py`). **Commits this pass: 16**, this entry's
+included. `# TODO(test)` markers in `src/`: 2.
+
+**Left open:**
+- **Written but never exercised end to end:** the Flickr adapter (no key; Pro
+  required) — beside pass 1's MPS branch. Marked `TODO(test)`.
+- `optica fetch --mode clip` and a **grouped** blocklist class stop with "CLIP
+  filtering is not available in this build" after all entry checks → **pass 4**
+  (`input/clip.py`).
+- The `dataset/` conflict prompt: state, description, replace and refusal are
+  built and unit-tested in `manager.py`, but no pass-2 command writes
+  `dataset/`, so no CLI path prompts yet → **passes 3 and 4** (`label`/`curate`
+  materialization, `fetch --mode clip`).
+- Browser stages of `label`/`curate`, and `curation.py`'s server side → **pass 3**.
+  Truncated JPEGs pass header-only pre-flight → **passes 3 and 4** to expect.
+- `run` sequencing → **pass 5**.
+- Rare-class Open Images cost model computed, not measured → `TODO(test)`.
+- `FORCE_COLOR` test fragility and em-dash mojibake → the pass that next touches
+  `utils/logging.py`.
+- Proposed plan change (class-name rule 1: trailing dot/space, control
+  characters) and the `pass-2.md` manifest clause → **human decision**.
+- `.smoke/pass2-index/` and `.smoke/pass2-fetch/` are this pass's throwaway
+  smoke directories (each with a scratch home); `.smoke/final` and `.smoke/try`
+  are pass 1's and were not touched.
+
+**Entries logged this pass:** 19.
+
+| # | Entry | Kind |
+|---|---|---|
+| 1 | Open Images image-URL acquisition strategy | assumption (the logged decision) |
+| 2 | Two modules added to `input/` | assumption |
+| 3 | `input/__init__.py` in `_NO_LOGIC` | assumption |
+| 4 | Blocklist matching | assumption |
+| 5 | Sub-term counts, grouped or separated | assumption |
+| 6 | Mixed overlap re-opens the definition | assumption |
+| 7 | Header-only pre-flight misses a half JPEG | **finding → passes 3, 4** |
+| 8 | Class-name rule 1 gaps | **proposed plan change** |
+| 9 | `.fetch.json` sidecar | assumption |
+| 10 | Dedupe at the write into staging | assumption |
+| 11 | Fetch loop parameters | assumption |
+| 12 | Reserved device name with any extension | assumption |
+| 13 | Pass-1 tests changed by pass 2 | record (regressions named) |
+| 14 | `GlobalState.argv` | **pass-1 defect, fixed** |
+| 15 | `FORCE_COLOR` fails logging tests | finding |
+| 16 | `--clip-threshold` checked before config load | assumption |
+| 17 | `is_interactive` and `NUL` | **pass-1 defect, fixed** |
+| 18 | Em-dash mojibake | finding |
+| 19 | Milestone "produces a manifest" | assumption (awaiting a decision) |
+
+12 assumptions + 3 findings + 1 proposed plan change + 2 fixes + 1 record = 19.
+
+**Next:** pass 3 — `server/`. Read this file first: entry 7 (truncated JPEGs),
+the `dataset/` conflict item above, and `input/curation.py`, which the server
+should call rather than reimplement.
