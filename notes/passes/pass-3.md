@@ -2,6 +2,9 @@
 
 ## Read
 `spec/optica-plan-v1-core.md` § "Labeling & Curation" in full.
+Also `notes/verified.md`, and `notes/build-log.md` from the pass 2 entries
+onward — pass 2 built and exercised the label-from-manifest path this pass
+depends on.
 
 ## Build
 `src/optica/server/` — the FastAPI application, its routes, both pages, and the
@@ -16,4 +19,4 @@ log it rather than fixing it here.
 
 ## Done when
 `optica label` and `optica curate` both start, serve their page, and write back
-through the manifest.
+through their session files.

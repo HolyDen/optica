@@ -1,6 +1,9 @@
 # Pass 4 — Training and export
 
-**The first pass that needs torch.** Install it before starting.
+**Requires the torch stack.** It is installed into `.venv` by the human before
+this pass launches — do not install it yourself. A ~2GB download exceeds the
+Bash tool's default timeout. Pass 0 task 4 also needed torch, in a throwaway
+probe venv, so this is not the first pass to need it.
 
 ## Read
 `spec/optica-plan-v1-core.md` §§ "Training" and "Export".
