@@ -954,3 +954,21 @@ plan does not say whether the asymmetry is intended. Pass 4 decides and logs it.
 l.1560 sanctions the bare `OpticaError` raise and names it the signal. Whoever
 adds the class must also edit l.1560, which currently says `OpticaCLIPLoadError`
 is the one class the subsystem rule does not reach.
+
+### `notes/verified.md` § task 2 misattributed the "~3GB" figure to the plan
+**Pass:** between 1 and 2   **Date:** 2026-09-13   **Where:** `notes/verified.md` § task 2, Consequences item 1
+**Found:** the entry read "the plan's ~3GB figure is high". The plan contains no
+such figure — searched across all 1781 lines for every `GB`, `MB`, `GiB`,
+`gigabyte` and `disk` token during the plan amendment session. The figure
+originates in `notes/passes/pass-0.md` line 63. The plan's own `torch-gpu`
+estimate was `~2GB`, which the same measurement calls slightly low.
+**Action taken:** corrected in place by the human between passes.
+`notes/verified.md` is not append-only, so unlike this file it is corrected
+rather than superseded. The measurement (2.40 GB Linux, 2.08 GB Windows) was
+always correct and is unchanged; only the attribution moved.
+**Why it is recorded here:** a pass may not retro-edit an earlier pass's
+entries. This was a human edit between passes, and this entry is the audit
+trail for it.
+**Consequence:** amendment item 8 was **declined** on exactly this ground — see
+`optica-plan-amendment-change-record-2026-09-13.md`. Nothing in the plan needed
+changing. `pass-0.md` is not corrected: derived artifact, pass closed, log-only.
