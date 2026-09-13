@@ -24,6 +24,9 @@ _NO_LOGIC: frozenset[str] = frozenset(
         # A docstring and `from __future__ import annotations`. Nothing to assert
         # that would not be asserting Python's import system.
         "utils/__init__.py",
+        # Pass 2: the package docstring and nothing else. Everything the input
+        # layer exposes is imported from its submodules by name.
+        "input/__init__.py",
     }
 )
 
