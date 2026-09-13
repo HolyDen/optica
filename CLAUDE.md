@@ -145,8 +145,13 @@ raises `Abort` for both cases and would return `130` where the exit-code table
 requires `3`. This lands in pass 1 and every later command inherits it.
 
 **Core is exactly six packages.** Do not add `click` or `pydantic` to the
-dependency list. They arrive transitively through `typer` and
-`pydantic-settings`, and the plan says so deliberately and twice.
+dependency list. `pydantic` arrives transitively through `pydantic-settings` — confirmed
+2026-09-13, `pip show pydantic` reports `Required-by: pydantic-settings`.
+`click` does **not**: Typer vendors it as the private `typer._click` and
+declares no dependency, so `import click` fails in a Core install. Use
+`typer`'s equivalents — `typer.testing`, `typer._click.exceptions` — never
+`click.*`. Adding real Click would install a second `UsageError` class
+alongside the vendored one, and every `except` would silently stop firing.
 
 ## Tests
 
