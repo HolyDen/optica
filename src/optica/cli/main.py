@@ -44,7 +44,7 @@ from optica.cli.config import register as register_config
 from optica.config.defaults import DEFAULT_TASK
 from optica.exceptions import ExitCode, OpticaError
 from optica.utils import logging as olog
-from optica.utils.prompts import is_interactive
+from optica.utils.prompts import ask_class_names, is_interactive
 
 __all__ = [
     "GlobalState",
@@ -103,6 +103,10 @@ class OpticaTyper(typer.Typer):
         Returns:
             The process exit code.
         """
+        # The run's state carries the argv actually invoked, so a reconstructed
+        # corrected command echoes this invocation rather than `sys.argv`, which
+        # differs whenever the app is driven programmatically.
+        kwargs.setdefault("obj", GlobalState(argv=list(argv)))
         try:
             result = super().__call__(args=argv, standalone_mode=False, **kwargs)
         except UsageError as exc:
@@ -142,6 +146,8 @@ class OpticaTyper(typer.Typer):
         if _retry:
             filled = self._redirect_to_classes_prompt(exc, argv)
             if filled is not None:
+                # A fresh run state: the retry is a new invocation with new argv.
+                kwargs.pop("obj", None)
                 return self.invoke_guarded(filled, _retry=False, **kwargs)
 
         marks = olog.markers_for(olog.err_console)
@@ -180,11 +186,7 @@ class OpticaTyper(typer.Typer):
         olog.err_console.print(
             f"[bold yellow]{marks.warn}[/bold yellow] No class names given."
         )
-        answer = typer.prompt(
-            "  Which classes? Comma-separated, e.g. cat,dog",
-            default="",
-            show_default=False,
-        ).strip()
+        answer = ask_class_names()
         if not answer:
             return None
 
@@ -269,7 +271,8 @@ def _root(
 ) -> None:
     """Optica — image classification by transfer learning."""
     state = get_state(ctx)
-    state.argv = list(sys.argv[1:])
+    if not state.argv:
+        state.argv = list(sys.argv[1:])
     state.merge(
         verbose=verbose, quiet=quiet, yes=yes, force=force, dry_run=dry_run
     )

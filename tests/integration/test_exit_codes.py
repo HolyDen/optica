@@ -65,7 +65,10 @@ class TestExitCodes:
         assert "optica" in result.stdout
 
     def test_optica_error_is_one(self, workspace):
-        result = _run_script(_drive(["fetch", "-c", "cat,dog"]), workspace)
+        # One class is below the two-class minimum: an OpticaValidationError
+        # raised before anything touches the network. (Until pass 2 this used
+        # `fetch -c cat,dog`, which now fetches.)
+        result = _run_script(_drive(["fetch", "-c", "cat"]), workspace)
         assert result.returncode == ExitCode.ERROR
         assert "Traceback" not in result.stderr
 

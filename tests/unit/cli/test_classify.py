@@ -130,7 +130,9 @@ class TestGlobalFlagsEitherPosition:
         assert olog.get_verbosity() is olog.Verbosity.VERBOSE
 
     def test_dry_run_is_accepted_on_the_commands_that_take_it(self):
-        for name in ("fetch", "train", "export", "run"):
+        # fetch is real from pass 2: a dry run resolves and writes nothing.
+        assert app.invoke_guarded(["fetch", "--dry-run", "-c", "cat,dog"]) == 0
+        for name in ("train", "export", "run"):
             assert app.invoke_guarded([name, "--dry-run"]) == ExitCode.ERROR
 
     def test_dry_run_is_not_offered_on_label_or_curate(self):
@@ -164,7 +166,9 @@ class TestLock:
     def test_the_lock_is_released_when_the_stage_raises(self, fake_home):
         from optica.utils.lockfile import lock_path
 
-        app.invoke_guarded(["fetch", "-c", "cat"])
+        # `train` still raises inside the lock. (`fetch -c cat` used to, until
+        # pass 2 made fetch validate classes before taking it; see build-log.)
+        assert app.invoke_guarded(["train"]) == ExitCode.ERROR
         assert not lock_path().exists()
 
     def test_a_live_lock_blocks_a_write_command(self, fake_home, monkeypatch, capsys):
@@ -196,20 +200,62 @@ class TestLock:
 class TestPlanValuesStillToImplement:
     """Flag behaviour whose implementation belongs to a later pass."""
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_classes_is_warned_and_ignored_by_curate(self):
+    def test_classes_is_warned_and_ignored_by_curate(self, fake_home, capsys):
         """Curate reads the fetched staging structure, not a class list."""
+        staged = fake_home / ".optica" / "staging" / "cat"
+        staged.mkdir(parents=True)
+        (staged / "0001.jpg").write_bytes(b"x")
+        # The browser stage is pass 3, so the command still ends there.
+        assert app.invoke_guarded(["curate", "-c", "dog"]) == ExitCode.ERROR
+        err = capsys.readouterr().err
+        assert "--classes is ignored by optica curate" in err
+        assert "optica curate is not available" in err
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_folder_with_manifest_is_a_mutually_exclusive_flag_error(self):
+    def test_curate_with_nothing_staged_is_a_precondition_error(self, capsys):
+        assert app.invoke_guarded(["curate"]) == ExitCode.ERROR
+        assert "No fetched images are staged" in capsys.readouterr().err
+
+    def test_curate_reports_an_incomplete_fetch_and_proceeds(self, fake_home, capsys):
+        partial = fake_home / ".optica" / "staging" / "dog.partial"
+        partial.mkdir(parents=True)
+        (partial / "0001.jpg").write_bytes(b"x")
+        app.invoke_guarded(["curate"])
+        assert "did not finish" in capsys.readouterr().err
+
+    def test_folder_with_manifest_is_a_mutually_exclusive_flag_error(self, capsys):
         """OpticaValidationError, per the plan's error-family table."""
+        code = app.invoke_guarded(
+            ["label", "--folder", "./images", "--manifest", "./m.csv", "-c", "cat,dog"]
+        )
+        assert code == ExitCode.ERROR
+        assert "unsupported in V1" in capsys.readouterr().err
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_mode_defaults_contextually(self):
+    @pytest.mark.parametrize(
+        ("argv", "line"),
+        [
+            (["run", "-c", "cat,dog"], "Mode: curate (default)"),
+            (["run", "--folder", "./images"], "Mode: label (default for local input)"),
+            (["run", "--manifest", "./m.csv"], "Mode: label (default for local input)"),
+        ],
+    )
+    def test_mode_defaults_contextually(self, argv, line, capsys):
         """Curate when acquiring by fetch.
 
         Label when --folder or --manifest is given.
         """
+        app.invoke_guarded(argv)
+        assert line in capsys.readouterr().out
+
+    def test_config_default_mode_never_turns_a_valid_invocation_into_an_error(
+        self, project_dir, capsys
+    ):
+        (project_dir / ".optica.toml").write_text(
+            'default_mode = "clip"\n', encoding="utf-8"
+        )
+        app.invoke_guarded(["run", "--folder", "./images"])
+        captured = capsys.readouterr()
+        assert "Mode: label (default for local input)" in captured.out
+        assert "requires fetched input" not in captured.err
 
     @pytest.mark.skip(reason="stub - pass 4")
     def test_checkpoint_rank_absence_prompts_rather_than_meaning_rank_1(self):

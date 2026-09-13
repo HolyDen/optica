@@ -235,17 +235,46 @@ class TestPlanValuesStillToImplement:
     later.
     """
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_missing_classes_prompt_validates_names(self):
-        """The prompt's answer goes through the filesystem-safe class-name rules."""
+    @pytest.mark.parametrize("argv", [["fetch", "--classes"], ["fetch"]])
+    def test_missing_classes_prompt_validates_names(
+        self, argv, fake_home, project_dir, monkeypatch, capsys
+    ):
+        """The prompt's answer goes through the filesystem-safe class-name rules.
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_correctable_abort_prints_the_corrected_command(self):
+        Both shapes reach the same prompt: a trailing ``--classes``
+        (``BadOptionUsage``, redirected by the handler) and ``--classes`` absent
+        entirely (resolved in the command body).
+        """
+        monkeypatch.setattr("optica.cli.main.is_interactive", lambda: True)
+        monkeypatch.setattr("optica.utils.prompts.is_interactive", lambda: True)
+        monkeypatch.setattr("typer.prompt", lambda *a, **k: "--yes,dog")
+        assert app.invoke_guarded(argv) == ExitCode.ERROR
+        err = capsys.readouterr().err
+        assert "No class names given" in err
+        assert "'--yes' begins with '-'" in err
+
+    def test_classes_bound_to_a_flag_spelling_is_refused_as_a_name(
+        self, fake_home, project_dir, capsys
+    ):
+        # `optica fetch --classes --yes` parses cleanly with classes == ["--yes"];
+        # amended class-name rule 1 is what stops a folder called --yes.
+        assert app.invoke_guarded(["fetch", "--classes", "--yes"]) == ExitCode.ERROR
+        assert "begins with '-'" in capsys.readouterr().err
+        assert not (fake_home / ".optica" / "staging").exists()
+
+    def test_correctable_abort_prints_the_corrected_command(
+        self, fake_home, project_dir, capsys
+    ):
         """Plan: output the full corrected command, other flags preserved.
 
         Only where reconstruction is unambiguous; where the fix needs judgment,
         explain the problem instead of guessing a command.
         """
+        argv = ["run", "--mode", "curate", "--folder", "./images", "-c", "cat,dog"]
+        assert app.invoke_guarded(argv) == ExitCode.ERROR
+        err = capsys.readouterr().err
+        assert "requires fetched input" in err
+        assert "optica run --folder ./images -c cat,dog" in err
 
     @pytest.mark.skip(reason="stub - pass 5")
     def test_all_invalid_flag_values_are_reported_at_once(self):

@@ -23,7 +23,30 @@ import typer
 
 from optica.exceptions import ExitCode, OpticaError, OpticaValidationError
 
-__all__ = ["PromptCategory", "confirm", "confirm_or_abort", "is_interactive"]
+__all__ = [
+    "CLASS_PROMPT",
+    "PromptCategory",
+    "ask_class_names",
+    "confirm",
+    "confirm_or_abort",
+    "is_interactive",
+]
+
+CLASS_PROMPT = "  Which classes? Comma-separated, e.g. cat,dog"
+"""The class-name prompt. Its example shows the comma, so a list is written one
+way whether typed as a flag or at a prompt."""
+
+
+def ask_class_names() -> str:
+    """Ask for class names and return the raw answer, trimmed.
+
+    The caller has already decided a prompt can fire — a terminal, and no
+    ``--yes`` — and splits the answer on commas exactly as it splits ``-c``.
+    One function, so the global handler's redirect and a command body that finds
+    ``--classes`` absent ask the same question.
+    """
+    answer: str = typer.prompt(CLASS_PROMPT, default="", show_default=False)
+    return answer.strip()
 
 
 class PromptCategory(StrEnum):

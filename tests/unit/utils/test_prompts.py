@@ -6,11 +6,16 @@ a declined prompt exits ``3`` while ``click.Abort`` exits ``130``.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 import typer
 
 from optica.exceptions import ExitCode, OpticaConfigError, OpticaValidationError
 from optica.utils.prompts import PromptCategory, confirm, confirm_or_abort
+
+if TYPE_CHECKING:
+    from optica.cli.classify import TerminalClassPrompter
 
 
 @pytest.fixture
@@ -128,21 +133,47 @@ class TestNonPromptingContext:
 class TestPlanValuesStillToImplement:
     """The ``--yes`` table's rows, each owned by a later pass."""
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_overlap_warning_yes_picks_continue(self):
+    # Built in pass 2 as the terminal side of the blocklist sequence,
+    # optica.cli.classify.TerminalClassPrompter, which asks through this module.
+
+    @staticmethod
+    def _prompter(*, yes: bool) -> TerminalClassPrompter:
+        from optica.cli import GlobalState
+        from optica.cli.classify import TerminalClassPrompter as Prompter
+
+        return Prompter(GlobalState(yes=yes))
+
+    def test_overlap_warning_yes_picks_continue(self, monkeypatch):
         """`--yes` picks: Y — continue."""
+        from optica.input.classes import Overlap
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_group_or_separate_yes_picks_group(self):
+        monkeypatch.setattr("optica.utils.prompts.is_interactive", lambda: False)
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: pytest.fail("prompted"))
+        overlaps = [Overlap(inner="cat", outer="wildcat")]
+        assert self._prompter(yes=True).accept_overlaps(overlaps) is True
+
+    def test_group_or_separate_yes_picks_group(self, monkeypatch):
         """`--yes` picks: Group."""
+        monkeypatch.setattr("optica.utils.prompts.is_interactive", lambda: False)
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: pytest.fail("prompted"))
+        prompter = self._prompter(yes=True)
+        assert prompter.group_or_separate("defective", ["cracked", "dented"]) is True
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_blocklist_definition_prompt_is_absent_from_the_yes_table(self):
+    def test_blocklist_definition_prompt_is_absent_from_the_yes_table(self, monkeypatch):
         """No answer can be defaulted.
 
         In a non-prompting context it raises OpticaValidationError rather than
         blocking.
         """
+        monkeypatch.setattr("optica.utils.prompts.is_interactive", lambda: False)
+        with pytest.raises(OpticaValidationError, match="'defective'"):
+            self._prompter(yes=True).define("defective")
+
+    def test_under_yes_the_definition_prompt_still_fires_in_a_terminal(self, monkeypatch):
+        monkeypatch.setattr("optica.utils.prompts.is_interactive", lambda: True)
+        monkeypatch.setattr("typer.prompt", lambda *a, **k: "cracked_screen, dented_case")
+        answer = self._prompter(yes=True).define("defective")
+        assert answer == ["cracked_screen", "dented_case"]
 
     @pytest.mark.skip(reason="stub - pass 4")
     def test_checkpoint_prompt_offers_four_options_and_yes_picks_keep(self):

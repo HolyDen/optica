@@ -15,6 +15,7 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 
 from optica.utils import logging as olog
@@ -62,3 +63,20 @@ def _clear_optica_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in list(os.environ):
         if key.startswith("OPTICA_") or key == "FLICKR_API_KEY":
             monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any real HTTP request in a test fail loudly.
+
+    From pass 2 the fetch path talks to Open Images and Flickr. A test that
+    reached them by accident would be slow, flaky, and a load on public
+    infrastructure, and would pass or fail with the network rather than the code.
+    ``httpx.MockTransport`` is unaffected, so tests that need HTTP build a client
+    over one.
+    """
+
+    def refuse(self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+        raise RuntimeError(f"test attempted real network access: {request.url}")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", refuse)

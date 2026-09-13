@@ -1,31 +1,63 @@
 """The ``classify`` command group.
 
 Implements plan § "CLI Layer & Conventions" → *Commands* and the *CLI Flag
-Reference (V1)*.
+Reference (V1)*, and — from pass 2 — § "Input & Acquisition" as it reaches the
+terminal: ``optica fetch`` end to end, the class-name prompt, and the terminal
+side of the blocklist sequence.
 
 **Fully self-contained** — all classify-specific logic lives here, so this module
 is the clean template for a future ``cli/detect.py``. ``main.py`` registers the
 group and the flat aliases and knows nothing about what is in it.
 
-Pass 1 builds the command surface: every flag the reference assigns to each
-command, the global flags in either position, the comma value separator, config
-resolution before the command acts, and the global lock. The stage bodies
-themselves arrive with their own passes — fetch and the input layer in pass 2,
-the browser in pass 3, training and export in pass 4.
+This layer maps commands to components and asks the questions; the decisions
+are the Input Manager's. Prompts live here and nowhere in ``optica.input``,
+which is what lets the Python API raise where the CLI asks.
+
+Stage bodies that belong to later passes still raise :func:`_not_yet`: the
+browser (``label``, ``curate``) in pass 3, training and export in pass 4, and
+``run``'s sequencing in pass 5. Pass 2 adds the preconditions those commands
+check before their stage begins.
 """
 
 from __future__ import annotations
 
+import math
+import shutil
+from functools import partial
 from pathlib import Path
 
 import typer
 
 from optica.cli import GlobalState, get_state, split_values
 from optica.config.defaults import MODELS, MODES, SOURCES
-from optica.exceptions import OpticaError, OpticaValidationError
+from optica.config.manager import ResolvedConfig, Source
+from optica.exceptions import ExitCode, OpticaError, OpticaValidationError
+from optica.input import manager as input_manager
+from optica.input.classes import (
+    Overlap,
+    ResolvedClass,
+    is_blocklisted,
+    normalize_class_names,
+    require_min_classes,
+    resolve_auto_classes,
+)
+from optica.input.curation import load_view
+from optica.input.fetch import (
+    CANDIDATE_SLACK,
+    ClassFetchReport,
+    Downloader,
+    SourceContext,
+    create_source,
+    fetch_class,
+    make_client,
+    staged_classes,
+)
+from optica.utils import logging as olog
+from optica.utils import prompts
 from optica.utils.lockfile import acquire_lock
+from optica.utils.progress import progress_bar
 
-__all__ = ["classify_app"]
+__all__ = ["TerminalClassPrompter", "classify_app"]
 
 classify_app = typer.Typer(
     name="classify",
@@ -82,11 +114,11 @@ def _globals(
 def _not_yet(stage: str) -> OpticaError:
     """Return the error a not-yet-built stage raises.
 
-    Pass 1 ships the command surface; each stage's body lands in its own pass.
-    The message is a plain statement rather than an apology, and it exits ``1``
-    like any other :class:`~optica.exceptions.OpticaError`. ``options`` is not
-    used: that field lists a fixed-value flag's valid values, and borrowing it
-    for a build note would put the wrong thing under "Valid options".
+    Each stage's body lands in its own pass. The message is a plain statement
+    rather than an apology, and it exits ``1`` like any other
+    :class:`~optica.exceptions.OpticaError`. ``options`` is not used: that field
+    lists a fixed-value flag's valid values, and borrowing it for a build note
+    would put the wrong thing under "Valid options".
     """
     return OpticaError(
         f"{stage} is not available in this build.",
@@ -110,6 +142,163 @@ def _check_mode(mode: str | None, allowed: tuple[str, ...], command: str) -> str
         why=f"optica {command} accepts only these modes.",
         options=list(allowed),
     )
+
+
+def _configured(resolved: ResolvedConfig, key: str) -> str | None:
+    """A config value that was explicitly set in a file or the environment."""
+    if resolved.sources.get(key) in (Source.DEFAULT, Source.FLAG):
+        return None
+    value = getattr(resolved.config, key)
+    return str(value) if value is not None else None
+
+
+# --- Classes ----------------------------------------------------------------
+
+
+def _resolve_classes(
+    raw: list[str] | None, command: str, state: GlobalState
+) -> list[str]:
+    """Resolve ``-c`` for a command that cannot infer classes.
+
+    Absent, it surfaces the class-name prompt where a prompt can fire and raises
+    a hard error where one cannot — under ``--yes``, or with no terminal. The
+    trailing-``--classes`` case never reaches here: the parser raises
+    ``BadOptionUsage`` for it and the global handler redirects it to the same
+    prompt. Either way the names then go through both class-name rules, so a
+    value the parser bound from a flag spelling (``--classes --yes``) is refused
+    as a name.
+    """
+    values = split_values(raw)
+    if not values:
+        if state.yes or not prompts.is_interactive():
+            raise input_manager.missing_classes_error(command)
+        marks = olog.markers_for(olog.err_console)
+        olog.err_console.print(
+            f"[bold yellow]{marks.warn}[/bold yellow] No class names given."
+        )
+        values = split_values([prompts.ask_class_names()])
+        if not values:
+            raise input_manager.missing_classes_error(command)
+    names = normalize_class_names(values)
+    require_min_classes(names)
+    return names
+
+
+class TerminalClassPrompter:
+    """The blocklist sequence's questions, asked in a terminal.
+
+    Dispositions follow the ``--yes`` table: group-or-separate picks **Group**,
+    the overlap warning picks **Y**, and the class-name confirmation is skipped
+    for clean cases only. The user-definition prompt is absent from that table —
+    no answer can be defaulted — so it fires wherever a prompt can, ``--yes`` or
+    not, and raises ``OpticaValidationError`` where one cannot.
+
+    Args:
+        state: The run's global flags.
+    """
+
+    def __init__(self, state: GlobalState) -> None:
+        self.state = state
+
+    def define(self, name: str) -> list[str]:
+        """Ask what a blocklisted name means, as concrete sub-terms."""
+        if not prompts.is_interactive():
+            raise OpticaValidationError(
+                f"'{name}' needs a concrete definition before anything is fetched.",
+                why=f"'{name}' does not name a searchable, visual thing, and there is "
+                "no terminal to ask what it means.",
+                fix="Replace it in --classes with concrete names, e.g. "
+                "--classes cracked_screen,dented_case",
+            )
+        olog.warn(
+            f"'{name}' is too abstract to search for.",
+            why="Define it as one or more concrete, visual sub-terms.",
+        )
+        answer: str = typer.prompt(
+            f"  What does '{name}' mean? Comma-separated, "
+            "e.g. cracked_screen,dented_case",
+            default="",
+            show_default=False,
+        )
+        return split_values([answer])
+
+    def group_or_separate(self, name: str, sub_terms: list[str]) -> bool:
+        """Group the sub-terms into one class, or make each its own."""
+        if self.state.yes:
+            return True
+        joined = ", ".join(sub_terms)
+        return prompts.confirm(
+            f"Keep {joined} together as one class '{name}'? (n makes each its own class)",
+            default=True,
+            non_interactive_fix="Re-run with --yes to group them.",
+        )
+
+    def accept_overlaps(self, overlaps: list[Overlap]) -> bool:
+        """Warn about names that search into each other, and ask to continue."""
+        for overlap in overlaps:
+            olog.warn(
+                f"'{overlap.inner}' overlaps '{overlap.outer}'.",
+                why="A search for one also finds the other, so their images may mix.",
+            )
+        return prompts.confirm(
+            "Continue with these names?",
+            default=True,
+            assume_yes=self.state.yes,
+            non_interactive_fix="Re-run with --yes to continue, or rename the classes.",
+        )
+
+    def redefine_classes(self, current: list[str]) -> list[str]:
+        """Re-open the class-list prompt."""
+        olog.err_console.print(f"  Current classes: {', '.join(current)}")
+        return split_values([prompts.ask_class_names()])
+
+    def confirm(self, classes: list[ResolvedClass], *, clean: bool) -> bool:
+        """Show the resolved class list and counts before any fetch."""
+        if clean and self.state.yes:
+            return True
+        olog.err_console.print("Classes to fetch:")
+        for cls in classes:
+            if cls.grouped:
+                olog.err_console.print(
+                    f"  {cls.name}: {cls.per_query} images each for "
+                    f"{', '.join(cls.queries)} ({cls.target} total)"
+                )
+            else:
+                olog.err_console.print(f"  {cls.name}: {cls.target} images")
+        return prompts.confirm(
+            "Fetch these classes?",
+            default=True,
+            assume_yes=self.state.yes and clean,
+            non_interactive_fix="Re-run with --yes to confirm unattended.",
+        )
+
+
+# --- fetch --------------------------------------------------------------------
+
+
+def _report_fetch(reports: list[ClassFetchReport], source_name: str) -> None:
+    """The completion block. Nothing about the fetch is silent."""
+    for report in reports:
+        note = ""
+        if report.exhausted and report.shortfall:
+            note = f" — {source_name} ran out of candidates ({report.shortfall} short)"
+        olog.status(f"  {report.name}: {report.staged} images{note}")
+    dead = sum(r.dead for r in reports)
+    unreadable = sum(r.unreadable for r in reports)
+    duplicates = sum(r.duplicates for r in reports)
+    resized = sum(r.resized for r in reports)
+    if dead or unreadable or duplicates:
+        olog.detail(
+            f"  Skipped {dead} dead links, {unreadable} unreadable downloads and "
+            f"{duplicates} duplicates."
+        )
+    if resized:
+        olog.warn(
+            f"{resized} fetched images were smaller than 128px and were upscaled.",
+            why="Upscaled images carry less detail than their size suggests.",
+        )
+    total = sum(r.staged for r in reports)
+    olog.success(f"Fetch complete — {total} images across {len(reports)} classes")
 
 
 @classify_app.command()
@@ -146,7 +335,18 @@ def fetch(
     # `--mode label` is a hard error here: fetch is remote acquisition, and
     # label mode takes local input.
     _check_mode(mode, ("curate", "clip"), "fetch")
-    state.config(
+    if clip_threshold is not None:
+        # The plan's own messages for the three hard-error bands, per command.
+        # Config load would reject the same values, but with its generic range
+        # error, and it runs first, so the flag is checked here before it.
+        input_manager.check_clip_threshold(clip_threshold, command="fetch")
+    if source is not None and source not in SOURCES:
+        raise OpticaValidationError(
+            f"--source {source} is not a known source.",
+            options=list(SOURCES),
+            default="open-datasets",
+        )
+    resolved = state.config(
         overrides={
             "default_source": source,
             "images_per_class": images_per_class,
@@ -160,9 +360,161 @@ def fetch(
             "clip_threshold": "--clip-threshold",
         },
     )
+    config = resolved.config
+
+    # --- Everything knowable at entry, before any prompt or download. ----
+    resolved_mode = input_manager.resolve_mode(
+        command="fetch",
+        explicit=mode,
+        configured=_configured(resolved, "default_mode"),
+        local_input=False,
+    )
+    names = _resolve_classes(classes, "fetch", state)
+    blocklisted = [name for name in names if is_blocklisted(name)]
+    if resolved_mode.mode == "clip":
+        threshold = input_manager.check_clip_threshold(
+            config.clip_threshold, command="fetch"
+        )
+        input_manager.require_clip_extra()
+        if threshold.warning:
+            olog.warn(threshold.warning)
+        if threshold.prompt:
+            prompts.confirm_or_abort(
+                threshold.prompt,
+                default=True,
+                assume_yes=state.yes,
+                non_interactive_fix="Re-run with --yes to continue.",
+            )
+    elif blocklisted:
+        # The grouped path scores images with CLIP after the fetch completes;
+        # blocklist membership is knowable now, so the dependency is checked now
+        # rather than after the run's work and quota are spent.
+        input_manager.require_clip_extra()
+
+    if state.dry_run:
+        olog.status(resolved_mode.line)
+        olog.status(f"Source: {config.default_source}")
+        olog.status(f"Classes: {', '.join(names)}")
+        olog.status(f"Images per class: {config.images_per_class}")
+        if blocklisted:
+            olog.status(f"Needs a definition first: {', '.join(blocklisted)}")
+        olog.status("Destination: ~/.optica/staging/")
+        olog.status("Dry run — nothing was fetched or written.")
+        return
+
     with acquire_lock("optica fetch"):
-        split_values(classes)
-        raise _not_yet("optica fetch")
+        _fetch_body(state, names, resolved_mode, resolved)
+
+
+def _fetch_body(
+    state: GlobalState,
+    names: list[str],
+    resolved_mode: input_manager.ResolvedMode,
+    resolved: ResolvedConfig,
+) -> None:
+    config = resolved.config
+    client = make_client()
+    try:
+        context = SourceContext(
+            client=client, api_key=config.flickr_api_key, report=olog.status
+        )
+        source = create_source(config.default_source, context)
+        # Unknown names and a missing key fail before any prompt asks for work.
+        source.prepare([name for name in names if not is_blocklisted(name)])
+
+        if config.default_source == "open-datasets" and input_manager.soft_cap_exceeded(
+            config.images_per_class, config.max_open_datasets_per_class
+        ):
+            olog.warn(
+                f"--images-per-class {config.images_per_class} is above the Open Images "
+                f"courtesy limit of {config.max_open_datasets_per_class} per class.",
+                why="Open Images is public infrastructure; large fetches load it for "
+                "everyone.",
+            )
+            prompts.confirm_or_abort(
+                "Continue anyway?",
+                default=True,
+                category=prompts.PromptCategory.SAFETY,
+                assume_yes=state.yes,
+                force=state.force,
+                non_interactive_fix="Re-run with --yes to continue, or lower "
+                "--images-per-class.",
+            )
+
+        _resume_or_start_fresh(state, names)
+
+        plan = resolve_auto_classes(
+            names, config.images_per_class, TerminalClassPrompter(state)
+        )
+        if not plan:
+            raise typer.Exit(code=ExitCode.ABORTED)
+        source.prepare([query for cls in plan for query in cls.queries])
+        if resolved_mode.mode == "clip" or any(cls.grouped for cls in plan):
+            raise _not_yet("CLIP filtering")
+
+        olog.status(resolved_mode.line)
+        olog.status(f"Source: {source.display_name}")
+        existing = {s.name: s.images for s in staged_classes()}
+        needed = {
+            query: math.ceil(
+                max(0, cls.target - existing.get(cls.name, 0)) * CANDIDATE_SLACK
+            )
+            for cls in plan
+            for query in cls.queries
+        }
+        source.warm({query: count for query, count in needed.items() if count})
+
+        downloader = Downloader(client)
+        reports: list[ClassFetchReport] = []
+        for cls in plan:
+            with progress_bar(f"Fetching {cls.name}", total=cls.target) as bar:
+                task = bar.task_ids[0]
+                bar.advance(task, existing.get(cls.name, 0))
+                reports.append(
+                    fetch_class(
+                        cls, source, downloader, on_image=partial(bar.advance, task)
+                    )
+                )
+        _report_fetch(reports, source.display_name)
+    finally:
+        client.close()
+
+
+def _resume_or_start_fresh(state: GlobalState, names: list[str]) -> None:
+    """The interrupted-fetch prompt, which belongs to ``optica fetch``.
+
+    ``--yes`` picks Resume. Declining starts fresh for those classes, which
+    deletes their ``.partial`` directories — the directory is the whole state.
+    Staged classes not in this request are left alone and named, since
+    curation will show them.
+    """
+    staged = staged_classes()
+    requested = set(names)
+    interrupted = [s for s in staged if s.partial and s.name in requested]
+    others = sorted({s.name for s in staged if s.name not in requested})
+    if others:
+        olog.warn(
+            f"Staging also holds images for {', '.join(others)}, which curation "
+            "will show.",
+            fix="To start clean: optica config --clear-staging",
+        )
+    if not interrupted:
+        return
+    olog.err_console.print("A previous fetch was interrupted:")
+    for s in interrupted:
+        olog.err_console.print(f"  {s.name}: {s.images} images so far")
+    resume = prompts.confirm(
+        "Resume it? (n starts fresh for these classes)",
+        default=True,
+        assume_yes=state.yes,
+        non_interactive_fix="Re-run with --yes to resume.",
+    )
+    if not resume:
+        for s in interrupted:
+            shutil.rmtree(s.path)
+
+
+# --- label, curate ------------------------------------------------------------
 
 
 @classify_app.command()
@@ -185,6 +537,7 @@ def label(
     """Label a flat folder of images in the browser."""
     state = _globals(get_state(ctx), verbose=verbose, quiet=quiet, yes=yes, force=force)
     state.config()
+    input_manager.require_single_input_source(folder, manifest)
     with acquire_lock("optica label"):
         split_values(classes)
         raise _not_yet("optica label")
@@ -204,11 +557,26 @@ def curate(
     """Review fetched images in the browser and keep the good ones."""
     state = _globals(get_state(ctx), verbose=verbose, quiet=quiet, yes=yes, force=force)
     state.config()
+    if split_values(classes):
+        # Curate reads the fetched staging structure rather than a class list.
+        olog.warn(
+            "--classes is ignored by optica curate.",
+            why="Curation reviews the classes already fetched into staging.",
+        )
     with acquire_lock("optica curate"):
-        # `--classes` is warned and ignored here: curate reads the fetched
-        # staging structure rather than a class list.
-        split_values(classes)
+        view = load_view()
+        if view.incomplete:
+            # Reported and proceeded past: the resume prompt belongs to fetch.
+            olog.warn(
+                f"The fetch for {', '.join(view.incomplete)} did not finish; curating "
+                "what was fetched.",
+                fix="To finish it first: optica fetch --classes "
+                + ",".join(view.incomplete),
+            )
         raise _not_yet("optica curate")
+
+
+# --- train, export, run ---------------------------------------------------------
 
 
 @classify_app.command()
@@ -351,13 +719,18 @@ def run(
         dry_run=dry_run,
     )
     _check_mode(mode, MODES, "run")
+    if clip_threshold is not None:
+        # The plan's own messages for the three hard-error bands, per command.
+        # Config load would reject the same values, but with its generic range
+        # error, and it runs first, so the flag is checked here before it.
+        input_manager.check_clip_threshold(clip_threshold, command="run")
     if source is not None and source not in SOURCES:
         raise OpticaValidationError(
             f"--source {source} is not a known source.",
             options=list(SOURCES),
             default="open-datasets",
         )
-    state.config(
+    resolved = state.config(
         overrides={
             "default_source": source,
             "images_per_class": images_per_class,
@@ -379,6 +752,15 @@ def run(
             "augmentation": "--no-augmentation",
         },
     )
+    local = input_manager.require_single_input_source(folder, manifest)
+    resolved_mode = input_manager.resolve_mode(
+        command="run",
+        explicit=mode,
+        configured=_configured(resolved, "default_mode"),
+        local_input=local is not input_manager.InputSource.FETCH,
+        argv=state.argv,
+    )
+    olog.status(resolved_mode.line)
     with acquire_lock("optica run"):
         split_values(classes)
         split_values(checkpoint_rank)

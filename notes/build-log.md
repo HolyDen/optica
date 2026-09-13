@@ -1254,3 +1254,93 @@ beside pass 1's MPS branch on the list of code not to mistake for tested.
 **Why:** Windows reserves the names with any extension, so `con.x` is exactly as
 unusable as `con`; it is the same rule applied as Windows applies it.
 **Reversible?** Yes.
+
+### Pass-1 tests changed by pass 2 — the regressions, named
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `tests/integration/test_exit_codes.py`, `tests/unit/cli/test_classify.py`
+Pass 1 used `optica fetch` as a convenient command that always failed with
+"not available in this build". Pass 2 makes `fetch` real, so every pass-1 test
+that leaned on that stand-in either broke or went quietly vacuous. Each is
+listed; none is a silent edit.
+
+1. **`test_exit_codes.py::test_optica_error_is_one` — assertion broke.** It ran
+   `fetch -c cat,dog` in a subprocess and expected exit 1. Under pass 2 that
+   command resolves two valid classes and proceeds: in this session it
+   **downloaded the Open Images class list from GCS** (a real network call from
+   a test), reached the class confirmation, read EOF from the subprocess's
+   inherited stdin and exited **130**. The old assertion no longer holds because
+   the command it named is no longer an error. **Changed to** `fetch -c cat`,
+   which raises `OpticaValidationError` (fewer than 2 classes) before any
+   network access — still an `OpticaError`, still exit 1, still from a real
+   process. What the test proves is unchanged: an `OpticaError` exits 1 without
+   a traceback.
+2. **`test_classify.py::TestLock::test_the_lock_is_released_when_the_stage_raises`
+   — passed, but vacuously.** Its `fetch -c cat` now fails class-count
+   validation *before* `acquire_lock`, so "the lock file is absent afterwards"
+   held without the lock ever being taken. **Changed to** `train`, whose body
+   still raises inside the lock. Release after a failure inside the real fetch
+   body is covered by a new fetch test.
+3. **`test_classify.py::TestGlobalFlagsEitherPosition::test_dry_run_is_accepted_on_the_commands_that_take_it`
+   — passed for a different reason.** It asserted exit 1 for `fetch --dry-run`,
+   meaning "the flag parsed and the unbuilt stage raised". `fetch --dry-run` now
+   fails for a missing `--classes` instead. **Changed** the `fetch` case to
+   `fetch --dry-run -c cat,dog`, which now exits 0 without touching the network
+   or disk; `train`, `export` and `run` keep the old expectation.
+4. **`test_quiet_is_accepted_before_or_after_the_command`** uses `fetch -c cat`
+   and still asserts exactly what it did — the verbosity level is set before
+   class validation raises. **Not changed.**
+
+**Also added, affecting every test:** an autouse `_no_network` fixture in
+`tests/conftest.py` that makes any real `httpx` transport raise. Item 1 is the
+reason: a pass-1 test reached GCS without anyone intending it, and nothing
+noticed except a wrong exit code. `httpx.MockTransport` is unaffected. It does
+not reach subprocess-based tests, which is why item 1 had to be fixed at the
+command line rather than by the guard.
+
+### `GlobalState.argv` ignored the argv actually invoked — a pass-1 defect, fixed
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/cli/main.py:OpticaTyper.invoke_guarded`, `_root`
+**Found:** while converting the stub `test_correctable_abort_prints_the_corrected_command`.
+The root callback set `state.argv = sys.argv[1:]` unconditionally, so an
+invocation through `invoke_guarded(argv)` — every in-process test, and pass 5's
+API if it drives the app — recorded the *host process's* argv. A reconstructed
+corrected command would have echoed pytest's command line.
+**Fixed:** `invoke_guarded` passes `obj=GlobalState(argv=argv)` to Click, and
+the root callback only falls back to `sys.argv` when no argv was recorded. The
+prompt-redirect retry drops that `obj` so the retried invocation gets fresh
+state for its new argv. The console-script path is unchanged (`__call__` already
+passes `sys.argv[1:]` as `argv`). The `UsageError`-at-the-base catch and the
+`BadOptionUsage`/`MissingParameter` routing are untouched.
+
+### `FORCE_COLOR` in the environment fails 13 pass-1 logging tests — finding
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `tests/unit/utils/test_logging.py`; affects any runner
+**Found:** this session's shell exports `FORCE_COLOR=3`. With it set, 13 of 29
+tests in `test_logging.py` fail — Rich emits ANSI styling into captured output
+and exact-string assertions miss. **Reproduced with pass 2's changes stashed**
+(`git stash`, 13 failed / 16 passed), so it predates this pass. `NO_COLOR=1`
+produces the same class of failure, since Rich still emits bold under it.
+**Not fixed:** the consoles are module-level objects built at import, before any
+fixture can scrub the environment, and the fix belongs with `utils/logging.py`
+rather than with the input layer. Every test run in this pass unsets
+`FORCE_COLOR` and `COLORTERM` (`env -u FORCE_COLOR -u COLORTERM pytest`). The
+GitHub runners do not set it; a developer shell or another CI that does will see
+13 failures that are not regressions.
+**Reversible?** n/a — a finding, recorded for the pass that next touches logging.
+
+### `--clip-threshold` hard-error bands are checked before config load
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/cli/classify.py:fetch`, `run`
+**Found:** plan § *CLIP Adapter* specifies the exact error for
+`--clip-threshold 0.0` on `fetch` (`✕ --clip-threshold 0.0 disables CLIP
+filtering entirely.` / `clip mode requires a threshold greater than 0.0.` /
+`To skip filtering, use --mode curate instead.`), and a variant on `run` that
+also offers `--mode label`. Pass 1's config load already rejects 0.0, 1.0 and
+out-of-range values as a numeric-domain violation, and the standing rule runs
+config load first — so the plan's wording was unreachable from the CLI; the user
+got the generic range error instead.
+**Assumed:** when the flag is given, `fetch` and `run` apply the band check to
+the flag value *before* config load, so the plan's per-command message is what
+prints. A bad value set in a config file still gets config load's error, which
+is the enforcement point the plan names for file-borne values. Exit code and
+class (`OpticaConfigError`, 1) are the same on both routes.
+**Why:** the plan states the message verbatim, and the config-load check was
+never meant to replace it — the plan describes the seven bands as an elaboration
+of the general range rule, not a second copy of it.
+**Reversible?** Yes — one call per command.
