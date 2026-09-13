@@ -66,6 +66,7 @@ __all__ = [
     "make_client",
     "register_source",
     "staged_classes",
+    "staged_images",
 ]
 
 CANDIDATE_SLACK: Final = 1.5
@@ -453,7 +454,8 @@ def _index_of(path: Path) -> int:
     return int(match.group(1)) if match else 0
 
 
-def _staged_images(folder: Path) -> list[Path]:
+def staged_images(folder: Path) -> list[Path]:
+    """The sequence-named images in one staging class directory, sorted."""
     if not folder.is_dir():
         return []
     return sorted(
@@ -472,7 +474,7 @@ def staged_classes(home: Path | None = None) -> list[StagedClass]:
             continue
         partial = entry.name.endswith(".partial")
         name = entry.name.removesuffix(".partial")
-        found.append(StagedClass(name, entry, partial, len(_staged_images(entry))))
+        found.append(StagedClass(name, entry, partial, len(staged_images(entry))))
     return found
 
 
@@ -558,7 +560,7 @@ def fetch_class(
         final.rename(partial)
     partial.mkdir(exist_ok=True)
 
-    existing = _staged_images(partial)
+    existing = staged_images(partial)
     hashes = {md5_of(path.read_bytes()) for path in existing}
     # Numbering continues from the highest index already present.
     next_index = max((_index_of(path) for path in existing), default=0) + 1
