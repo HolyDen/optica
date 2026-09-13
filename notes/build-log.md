@@ -890,3 +890,67 @@ diff shows. `pass-6.md` is not corrected: derived artifact, log-only, per the
 same rule applied to `pass-4.md` and `pass-0.md` in pass 0.
 **Reversible?** Yes, but do not — reverting reintroduces a runtime removed from
 the runners.
+
+### Plan amendment session — the eleven open items decided
+**Pass:** between 1 and 2   **Date:** 2026-09-13   **Where:** `spec/optica-plan-v1-core.md`
+**What this is:** the outcome of the out-of-repo plan-amendment session, recorded
+here so a later pass reading the eleven proposals above can tell which landed.
+The `spec/` edits were applied by the user, not by an agent.
+
+| # | Item | Disposition | Sites |
+|---|---|---|---|
+| 1 | `Thumbnail300KURL` fallback condition | **Amended** | l.759 |
+| 2 | "~100KB label-mapping file" | **Amended** — figure deleted | l.759, l.1527 |
+| 3 | `app.exception_handler()` | **Amended** — API name dropped | l.220, l.1618 |
+| 4 | `typer._click` under a `<1.0` bound | **Declined** | — |
+| 5 | "`MissingParameter` on `--classes`" | **Declined** | — |
+| 6 | `--classes --yes` binds `--yes` | **Amended** — at the class-name rules | l.242 |
+| 7 | `OpticaLockError` | **Deferred** — post-V1 | — |
+| 8 | "~3GB" torch download | **Declined** — no such figure in the plan | — |
+| 9 | `EXTRAS_REGISTRY` `size_estimate` | **Amended** | l.420–422, l.443, l.450, l.484, l.488, l.492 |
+| 10 | mobilenet "Last 3 InvertedResidual blocks" | **Amended** — word deleted | l.1063 |
+| 11 | `bn2` unlisted for the efficientnets | **Amended** | l.1060, l.1061 |
+
+**Item 2, second half — pass 2 owns it.** Deleting the figure removes the false
+constraint; the plan stays silent on how a class maps to image URLs. Pass 2
+chooses between streaming the 608.8 MiB image-metadata CSV, range-querying it,
+using per-class annotation files, or caching a derived index, and logs the
+choice here. If the chosen path involves a large first-use download, l.855's
+open-clip precedent (inform the user, show a progress indicator) is the shape to
+follow. Sizes in `notes/verified.md` § task 3.
+
+**Item 5 — pass 2 must route both shapes.** `--classes` absent entirely raises
+`MissingParameter`; a trailing `--classes` raises `BadOptionUsage`. The base
+catch reaches both; the redirect to the class-name prompt must not key on one
+class. Table in `notes/verified.md` § "Which exception each parser-error shape
+actually raises".
+
+**Item 6 — what changed for pass 2.** l.242 now excludes a leading `-` from
+class names, so `optica fetch --classes --yes` (which parses cleanly with
+`classes == ["--yes"]`) fails name validation with the standard hard error
+rather than creating a folder called `--yes`.
+
+**Item 8 — correction to the record.** `notes/verified.md` § task 2,
+consequence 1 states "the plan's ~3GB figure is high". **The plan contains no
+~3GB figure**, in any spelling or unit — searched every `GB`, `MB`, `GiB`,
+`gigabyte` and `disk` token across all 1781 lines. The plan's `torch-gpu` figure
+was `~2GB`, which the same measurement calls slightly low. The `~3GB` figure
+most likely originates in `notes/passes/pass-0.md`'s task 2 brief, which was not
+available to the amendment session. Pass 5 should not look for one in the plan.
+
+**Item 9 — what pass 5 inherits.** The registry now reads `torch-cpu`
+`~250MB`, `torch-gpu` `~2–2.5GB`, `torch-auto` `~250MB–2.5GB`, and the worked
+examples and their total were updated with it. The `2.5GB` top is deliberate
+headroom; the highest figure measured is 2.40 GB (`notes/verified.md` § task 2).
+
+**Item 11 — one thing handed to pass 4 rather than amended.**
+`mobilenetv3_large_100`'s `conv_head` and `norm_head` sit *after* `global_pool`
+(module order in `notes/verified.md` § task 4), so they belong to the classifier
+stack rather than the feature extractor, and l.1063 unfreezes neither. This may
+be correct — efficientnet's pre-pool `conv_head` is not the same case — but the
+plan does not say whether the asymmetry is intended. Pass 4 decides and logs it.
+
+**Item 7 — deliberately not in the plan.** `OpticaLockError` stays post-V1;
+l.1560 sanctions the bare `OpticaError` raise and names it the signal. Whoever
+adds the class must also edit l.1560, which currently says `OpticaCLIPLoadError`
+is the one class the subsystem rule does not reach.
