@@ -70,17 +70,54 @@ class PromptCategory(StrEnum):
     must be answered interactively."""
 
 
+if sys.platform == "win32":
+
+    def _is_console(stream: object) -> bool:
+        """Whether ``stream`` is a real Windows console, not merely a character device.
+
+        On Windows ``isatty()`` is True for the ``NUL`` device — ``</dev/null``,
+        ``subprocess.DEVNULL`` — because it is a character device, so
+        ``isatty()`` alone would treat "no stdin at all" as a terminal. A console
+        is the one character device ``GetConsoleMode`` succeeds on.
+        """
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        try:
+            handle = msvcrt.get_osfhandle(stream.fileno())  # type: ignore[attr-defined]
+        except (AttributeError, OSError, ValueError):
+            return False
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetConsoleMode.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.DWORD),
+        )
+        kernel32.GetConsoleMode.restype = wintypes.BOOL
+        mode = wintypes.DWORD()
+        return bool(kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+
+else:
+
+    def _is_console(stream: object) -> bool:
+        """On POSIX ``isatty()`` already answers this: ``/dev/null`` is not a tty."""
+        return True
+
+
 def is_interactive() -> bool:
     """Whether a prompt can actually be answered.
 
-    False when stdin is not a terminal — a pipeline, a container build, or a
-    test — in which case a prompt would block invisibly rather than being
+    False when stdin is not a terminal — a pipeline, a container build, a
+    redirect from ``/dev/null``, or a test — in which case a prompt would block
+    invisibly, or read end-of-file and look like an interrupt, rather than being
     answered.
     """
     try:
-        return sys.stdin.isatty()
+        if not sys.stdin.isatty():
+            return False
     except (AttributeError, ValueError):  # detached or closed stdin
         return False
+    return _is_console(sys.stdin)
 
 
 def confirm(

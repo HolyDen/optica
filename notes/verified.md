@@ -903,3 +903,30 @@ facts it rests on: labels are needed in addition to metadata; labels are sorted
 and range-addressable, metadata is not; density depends on file position, so
 sampling must spread across the file; ~18% of URLs are dead, so the pool needs
 slack; the label map's integrity can be verified against GCS's own MD5.
+
+### On Windows, `isatty()` is True for the `NUL` device
+
+**Date:** 2026-09-13
+**How:** Python 3.11.9 (`.venv`), Git Bash on the build machine:
+```
+python -c "import sys,os; print(sys.stdin.isatty(), os.isatty(0))" </dev/null
+echo | python -c "import sys,os; print(sys.stdin.isatty(), os.isatty(0))"
+python -c "import sys,os; print(sys.stdin.isatty(), os.isatty(0))" < pyproject.toml
+python -c "import subprocess,sys; print(subprocess.run([sys.executable,'-c','import sys;print(sys.stdin.isatty())'],stdin=subprocess.DEVNULL,capture_output=True,text=True).stdout)"
+# then, with stdin </dev/null: kernel32.GetFileType and kernel32.GetConsoleMode on msvcrt.get_osfhandle(0)
+```
+**Result:**
+
+| stdin | `sys.stdin.isatty()` | `os.isatty(0)` |
+|---|---|---|
+| `</dev/null` (the `NUL` device) | **True** | **True** |
+| `subprocess.DEVNULL` | **True** | — |
+| a pipe (`echo \|`) | False | False |
+| a regular file (`< pyproject.toml`) | False | False |
+
+For `</dev/null`, `GetFileType` reports **`FILE_TYPE_CHAR`** and
+`GetConsoleMode` **fails** — `NUL` is a character device but not a console.
+**Consequence:** `isatty()` alone cannot tell "no stdin at all" from a terminal
+on Windows. `utils/prompts.py:is_interactive` additionally requires
+`GetConsoleMode` to succeed on Windows; see `notes/build-log.md` § "`is_interactive`
+treated `NUL` as a terminal". POSIX is unaffected (`/dev/null` is not a tty).

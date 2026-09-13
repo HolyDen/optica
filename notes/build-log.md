@@ -1344,3 +1344,58 @@ class (`OpticaConfigError`, 1) are the same on both routes.
 never meant to replace it — the plan describes the seven bands as an elaboration
 of the general range rule, not a second copy of it.
 **Reversible?** Yes — one call per command.
+
+### `is_interactive` treated `NUL` as a terminal on Windows — a pass-1 defect, fixed
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/utils/prompts.py:is_interactive`
+**Found:** by the live milestone checks from `.smoke/pass2-fetch/`, not by any
+test. `optica fetch -c cat,dog -i 12 </dev/null` printed the class confirmation,
+read end-of-file and exited **130**; `optica config --clear-staging --yes
+</dev/null` did the same at the destructive prompt. Pass 1's settled rule ("A
+piped answer is not an answer", above) requires the non-prompting hard error,
+exit **1**. Cause, measured (`notes/verified.md` § "On Windows, `isatty()` is
+True for the `NUL` device"): `NUL` is a character device, so `isatty()` is True.
+A pipe and a file were already handled correctly, which is why pass 1's own
+check of the rule passed.
+**Consequence while it stood:** an unattended Windows run with stdin detached —
+a scheduled task, `subprocess.DEVNULL`, a CI step that closes stdin — got 130
+("interrupted") where the exit-code table says 1, so a script could not tell a
+refused prompt from Ctrl+C. It failed *safe*: the destructive prompt still
+deleted nothing.
+**Fixed:** on Windows `is_interactive` also requires `GetConsoleMode` to succeed
+on stdin's handle, which it does only for a real console. The platform branch is
+at module level, as `lockfile.py`'s is, so mypy checks the live branch on each
+runner. Two tests run a real child process with `stdin=DEVNULL` and with a pipe;
+the `DEVNULL` one **was verified to fail against the unfixed function** (stashed)
+and pass after. The live checks were re-run: both commands now exit 1 with the
+hard error, and staging was untouched (12 files).
+**Reversible?** Yes, but reversing reinstates exit 130 for detached stdin.
+
+### Em-dash renders as `�` on a cp1255 console — finding
+**Pass:** 2   **Date:** 2026-09-13   **Where:** every message containing `—`; `utils/logging.py`
+**Found:** live, on the build machine's cp1255 console: `✓ Fetch complete —
+20 images…` printed as `+ Fetch complete � 20 images…`. The `✓` → `+` is pass
+1's designed fallback; the em-dash is not in its fallback set, and Rich replaced
+it rather than raising, so there was **no traceback** — only mojibake. The plan's
+own messages use `—` throughout (`--classes is required for fetch — nothing to
+search for.`), and pass 2 transcribed them verbatim.
+**Not fixed:** extending the glyph fallback is `utils/logging.py`'s concern and
+touches every message, not the input layer. Recorded for the pass that next
+touches output; the candidate fix is adding `—` → `-` to `Markers`' fallback
+mapping, applied to whole lines rather than to the four status glyphs only.
+
+### `pass-2.md`'s milestone says fetch "produces a manifest"; the plan gives fetch no manifest
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `notes/passes/pass-2.md` § "Done when"
+**Found:** "`optica fetch` runs end to end and produces a manifest." In the plan,
+`--manifest` is a local *input* format (CSV/JSON of `path` + `class`) that
+`label`, `run` and `train` read; nothing specifies `optica fetch` writing one.
+Fetch's specified output is auto-fetch staging — `~/.optica/staging/<class>/`,
+a directory whose shape is the layout itself.
+**Assumed:** the milestone is judged against the plan's fetch output. No fetch
+manifest was built: inventing an output format the plan does not specify would
+be building outside scope and would create a contract later passes would have
+to honour. `pass-2.md` is a derived artifact and is not edited (the rule applied
+to `pass-0.md` and `pass-4.md`).
+**If a manifest was meant:** the nearest existing artifacts are the per-class
+`.fetch.json` sidecars (candidate keys tried and images delivered, per source and
+query — logged above), which are internal bookkeeping, not a user-facing
+manifest. Say which is wanted and it is a small, separate change.

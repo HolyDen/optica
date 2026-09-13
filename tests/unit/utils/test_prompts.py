@@ -107,6 +107,45 @@ class TestDeclineExitsThree:
             confirm_or_abort("Continue?")
 
 
+class TestIsInteractive:
+    """What counts as a terminal — measured, not assumed.
+
+    Pass 2 found that on Windows ``isatty()`` is True for the ``NUL`` device, so
+    ``optica fetch -c cat,dog </dev/null`` prompted, read end-of-file and exited
+    130 instead of raising the non-prompting error (``notes/build-log.md``).
+    These run a real child process, so the stdin under test is a real one.
+    """
+
+    @staticmethod
+    def _child(stdin: int | None) -> str:
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from optica.utils.prompts import is_interactive; "
+                "print(is_interactive())",
+            ],
+            stdin=stdin,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return result.stdout.strip()
+
+    def test_devnull_is_not_interactive(self):
+        import subprocess
+
+        assert self._child(subprocess.DEVNULL) == "False"
+
+    def test_a_pipe_is_not_interactive(self):
+        import subprocess
+
+        assert self._child(subprocess.PIPE) == "False"
+
+
 class TestNonPromptingContext:
     """A prompt that cannot fire raises a hard error rather than blocking."""
 
