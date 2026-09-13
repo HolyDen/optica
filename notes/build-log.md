@@ -1507,3 +1507,195 @@ included. `# TODO(test)` markers in `src/`: 2.
 **Next:** pass 3 — `server/`. Read this file first: entry 7 (truncated JPEGs),
 the `dataset/` conflict item above, and `input/curation.py`, which the server
 should call rather than reimplement.
+
+---
+
+## Pass 2 — after close, while CI runs
+
+Four questions from review. The entries below correct three of this pass's own
+entries (this file is append-only, so each correction supersedes rather than
+edits) and fix one item inside pass 2's scope.
+
+### Stale pass prompt — `pass-2.md` "produces a manifest"
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `notes/passes/pass-2.md` § "Done when"
+**Supersedes the classification of** *"`pass-2.md`'s milestone says fetch
+'produces a manifest'; the plan gives fetch no manifest"*, above, which logged
+this as an assumption awaiting a decision. There is nothing to decide:
+`CLAUDE.md` says the plan wins over anything under `notes/`, and the plan gives
+`optica fetch` no manifest output. The clause is simply wrong — a **stale pass
+prompt**, the same disposition pass 0 gave `pass-4.md` ("the first pass that
+needs torch") and `pass-0.md` step 4 (`.gitignore`). **`pass-2.md` is not
+corrected.** Pass 2's milestone therefore reads, against the plan: *`optica
+fetch` runs end to end* — **met**, live (the pass 2 close entry has the run).
+
+### Closing the loop on "manifest" — built, and what pass 3 will find
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/local.py`, `src/optica/input/sessions.py`
+**The plan's one manifest** is the `--manifest` input format, plan
+§ "Input & Acquisition" → *`--manifest`* (l.670–700), with the session-ID rule
+repeated in § "Labeling & Curation" → *Staging shapes* (l.972, l.1002) and
+Implementation Note 14. It is a CSV (`path` + optional `class`, header required)
+or a JSON array of objects, read by `optica label`, `optica run`, and `optica
+train` when fully labeled.
+**What creates one: the user.** Nothing in the plan has Optica write a manifest.
+l.672: *"A manifest is **disposable input** — used only to build the file list,
+**never rewritten**; labeled output is copied into `dataset/<class>/` exactly as
+`--folder` does."* l.678 repeats "the manifest never rewritten" for
+materialization.
+**Built for it** (committed `628f245`, `e2c3b63`):
+
+| Plan requirement | Where |
+|---|---|
+| format by extension; CSV header; `path`/`class` case-insensitive, trimmed; extra columns ignored | `local.py:parse_manifest`, `_read_csv`, `_read_json` |
+| missing-column error naming what the header held | `parse_manifest` (`path`), `Manifest.require_fully_labeled` (`class`) |
+| relative paths against the manifest's directory; URLs unsupported, not invalid | `parse_manifest`, `_is_url` |
+| exact duplicates collapse with count; contradictions a hard error naming rows | `parse_manifest` |
+| un-organized / mixed / fully-labeled states; fully labeled to `label` is a hard error | `Manifest.label_state`, `require_consistent`, `require_unlabeled_for_label`, `require_fully_labeled` |
+| class column through both class-name rules | `parse_manifest` → `classes.normalize_class_names` |
+| missing and unreadable rows via pre-flight | `local.py:preflight` |
+| materialization, same copy as `--folder`, post-conversion `_x` collisions | `local.py:copy_into_dataset` |
+| session ID = path + content hash | `Manifest.content_hash`, `sessions.py:session_id`, `LabelingSession.new(content_hash=…)` |
+
+**Does pass 3 find what it needs — checked by driving the path, not asserted.**
+`C:\Users\DEN\.claude\jobs\955142b7\tmp\manifest_path.py`, data in
+`.smoke/pass2-manifest/`, pass-2 code only: an 8-row unlabeled CSV → parse →
+`require_unlabeled_for_label` → pre-flight (**6 readable, 2 unreadable**: `zero
+bytes`, `could not be opened`; 6 + 2 = 8) → a manifest-sourced `LabelingSession`
+saved after every decision → reloaded (**cat 2, dog 3, 1 skipped, 0 not
+reached**; 5 + 1 + 0 = 6) → `copy_into_dataset` copied **cat 2, dog 3** → the
+manifest's SHA-256 **unchanged**. Appending one row gave a **different session
+file** (and the exact-duplicate row collapsed, count 1). A fully labeled JSON
+manifest was refused by the label check and materialized **cat 1, dog 1**.
+**Yes — the pieces compose**; no pass-2 command runs the path yet only because
+`optica label` stops at its browser stage.
+
+### Stale pass prompt — `pass-3.md` "write back through the manifest" contradicts the plan
+**Pass:** 2 (logged for pass 3)   **Date:** 2026-09-13   **Where:** `notes/passes/pass-3.md` § "Done when"
+**Found:** *"`optica label` and `optica curate` both start, serve their page, and
+write back through the manifest."* The plan says the manifest is **never
+rewritten** (l.672, l.678), and `optica curate` has no manifest at all — it reads
+auto-fetch staging (l.736, l.983). What the plan has both pages write back
+through is the **session files**: *"Both files are written on every decision"*
+(l.1018) — `~/.optica/staging/labeling/<session_id>.json` for labeling and
+`~/.optica/staging/curation.json` for curation — and, on completion, the copy
+into `dataset/<class>/`.
+**For pass 3:** read "write back" as the plan does. Labeling writes through
+`sessions.py:LabelingSession.save` (then `local.py:copy_into_dataset` at
+Finish); curation writes through `CurationSession.save` (then
+`curation.py:materialize_selection` at Confirm). **Do not write to a manifest
+file** — that would violate l.672 and change the manifest's content hash, which
+would silently start a fresh labeling session on the next run (Implementation
+Note 14). `pass-3.md` is not corrected: derived artifact, log-only.
+
+### Manifest assumptions that were made and not logged — silent until now
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/local.py`
+Found while answering the question above. Each was a decision the plan does not
+make; none was written here when it was made, which is the outcome the gap rule
+exists to prevent.
+- **Row numbers** in errors are **1-based data rows** (header not counted), for
+  CSV and JSON alike. The plan's examples name "rows" without numbering them.
+- **An empty `path` value is a hard error** naming the row. The plan specifies
+  missing columns and URLs, not blank cells.
+- **An empty `class` cell counts as unlabeled** — so a CSV with a `class` column
+  but some blank cells is the *mixed* case, a hard error, not a partially
+  labeled one to be tolerated.
+- **A UTF-8 BOM is accepted** (`utf-8-sig`); any other non-UTF-8 file is a hard
+  error. The plan names no encoding.
+- **JSON keys are normalized per record**, so objects spelling a column
+  differently (`path`, `Path`) agree; the reported "header" for JSON is the
+  union of keys in first-seen order. The plan's normalization rule is written
+  for a CSV header row.
+- **`list_files` skips hidden files and `Thumbs.db`/`desktop.ini`** in a flat
+  folder, so OS litter is not listed as an unreadable image the user never put
+  there. The plan says every file is pre-flighted.
+**Reversible?** Each is one condition in `local.py`.
+
+### Correction — `FORCE_COLOR` is fixed inside pass 2, and the earlier entry was wrong on three counts
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `tests/conftest.py`
+**Corrects** *"`FORCE_COLOR` in the environment fails 13 pass-1 logging tests —
+finding"*, above. That entry said: 13 failures; that `NO_COLOR=1` fails the same
+way; and "not fixed", handed to a later pass. All three were wrong, and the
+first two were never measured cleanly — the `NO_COLOR` runs still inherited
+`FORCE_COLOR=3` from the shell.
+**Measured** (`notes/verified.md` § "Which environment variables change Rich's
+output under the test suite"): **31** failures, not 13 — **17 pass-1 tests and 14
+pass-2 tests**. `TTY_COMPATIBLE=1` fails the same 31. `NO_COLOR=1` alone fails
+**none**.
+**The pattern, named:** these tests assert an ambient environment fact — that
+the process was not told to force colour. It is the same failure mode as pass 1's
+`test_the_test_run_is_inside_a_venv`, which failed all three runners on the
+first CI run. This is its second instance in the build.
+**Why it is pass 2's to fix, not to hand forward:** 14 of the 31 are pass 2's own
+tests (`test_fetch_command.py`, and the pass-2 stubs made real in
+`test_classify.py`, `test_main.py`, `test_config_command.py`) — pass 2 did not
+merely inherit the dependence, it extended it. The fix is test-harness only,
+in a file pass 2 already owns changes to, and changes no product behaviour:
+honouring `FORCE_COLOR` is correct for a user who sets it.
+**Fixed:** `tests/conftest.py` removes `FORCE_COLOR` and `TTY_COMPATIBLE` before
+`optica.utils.logging` is imported. Before import, not in a fixture, because Rich
+fixes the colour system when a console is constructed and the consoles are
+module-level. Child processes spawned by integration tests inherit the scrubbed
+environment. **Verified to bite:** the per-variable matrix gave 31 failures for
+each variable before the change and 0 after, re-run with no scrubbing in the
+parent; the whole suite now passes in this shell as-is.
+*Rejected: mutating the consoles' private attributes, which would break on a Rich
+upgrade; and rebuilding the consoles per test, which would orphan every
+`from optica.utils.logging import out_console` already bound.*
+**Supersedes** the pass 2 close entry's instruction to run tests with
+`env -u FORCE_COLOR -u COLORTERM`. That is no longer needed.
+
+### Correction — the em-dash finding had the wrong mechanism; the real defect is wider
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/utils/logging.py`; `notes/verified.md` § "What cp1255 can and cannot encode"
+**Corrects** *"Em-dash renders as `�` on a cp1255 console — finding"*, above.
+That entry said the em dash "is not in [pass 1's] fallback set, and Rich replaced
+it". **Both halves were unmeasured and wrong.** The em dash **is encodable** in
+cp1255 (`0x97`); Python wrote that byte correctly, and the Git Bash terminal
+behind the pipe decoded it as UTF-8 and showed `�`. It is an encoding
+*mismatch* between the stream and the terminal, not an encoding *failure*.
+**Was pass 1's approach deliberately limited to four glyphs? Yes.** Its entry
+("ASCII fallback for the four status glyphs") scopes it to "the plan's
+user-facing marker set", tests each glyph against the stream's encoding, and
+explicitly rejects two stream-level alternatives: forcing UTF-8 ("mojibake on a
+legacy console rather than a crash") and `errors="backslashreplace"` on stdout
+("strictly harder to read than `X`" — for a marker, which has a good ASCII
+stand-in).
+**Does it generalise to the em dash? No, for a reason that matters.** The
+mechanism asks "can this stream encode this character?" For the em dash the
+answer is yes, so the fallback would never fire. Adding `—` to the table would
+change nothing on this machine. What the em dash needs is a correct
+stream-to-terminal encoding, which is the option pass 1 rejected.
+**The real defect the question surfaced — not fixed, a decision for you:** a
+character the stream *cannot* encode raises on **stdout**. Measured:
+`out_console.print` of `→` raises `UnicodeEncodeError`, while `err_console`
+degrades to `\u2192` (stderr's `backslashreplace`). Pass 1 protected the four
+glyphs, but stdout also carries **user data**: class names, paths, Open Images
+display names. Reached through the real CLI with valid input:
+`optica fetch -c café,dog --dry-run` → exit 1, *"Optica hit an unexpected error:
+UnicodeEncodeError … This is a bug in Optica"*. `café` passes both class-name
+rules, and a test asserts it does. The global handler does its job (no raw
+traceback), but a valid command fails. It does not occur on a UTF-8 stream (Linux,
+macOS, a UTF-8 Windows console).
+**Why not fixed here:** every fix is a stream-level policy for stdout in
+`utils/logging.py`, and each option is one pass 1 considered and rejected for
+its glyphs — `errors="backslashreplace"` (or `"replace"`) on stdout at CLI
+start, or UTF-8 output where the stream is a pipe. Re-deciding a settled pass-1
+choice is not something to do unannounced from pass 2, even though a pass-2
+command is what reaches it. **Recommendation:** `backslashreplace` on stdout,
+set in `OpticaTyper.__call__` (CLI only, so the Python API never reconfigures a
+caller's stream) — pass 1's objection was about markers, which keep their `X`/`+`
+fallback; for arbitrary text there is no stand-in, and an escape beats a failed
+command.
+**Consequence while open:** on a non-UTF-8 Windows stdout, any command that
+prints a non-encodable class name or path to stdout fails with exit 1. Error
+messages (stderr) are unaffected apart from escapes.
+
+### Correction to the pass 2 close entry
+**Pass:** 2   **Date:** 2026-09-13   **Corrects:** *"Pass 2 — closed"*, above.
+- **Milestone:** the "produces a manifest" clause is a stale pass prompt, not
+  "not met, deliberately" — see above. Against the plan, the milestone is met.
+- **Left open:** "`FORCE_COLOR` test fragility" is **fixed**; "em-dash mojibake"
+  is replaced by the stdout-encoding defect above, awaiting a decision.
+- **State:** still 868 collected, 855 passed, 13 skipped — now in this shell as-is,
+  with no environment scrubbing by the caller.
+- **Entries logged this pass:** 19 at close, plus 7 here = **26**. The 7: 2 stale
+  pass prompts, 1 record (the manifest loop), 1 set of late-logged assumptions,
+  3 corrections — one of which (`FORCE_COLOR`) is also a fix.

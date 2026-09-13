@@ -18,7 +18,21 @@ from pathlib import Path
 import httpx
 import pytest
 
-from optica.utils import logging as olog
+# The tests assert what Optica prints to a captured, non-terminal stream: plain
+# text. Rich decides whether to style output from the environment, and two
+# variables override that decision — measured against Rich 15.0.0, FORCE_COLOR
+# and TTY_COMPATIBLE each fail the same 31 tests when set, and nothing else Rich
+# reads does. Honouring them is correct *product* behaviour; asserting their
+# absence would be the test asserting an ambient fact, the failure mode that made
+# pass 1's first CI run fail on every runner. So the harness removes them.
+#
+# This must run before `optica.utils.logging` is imported: its consoles are
+# module-level, and Rich fixes the colour system once, when a console is built.
+# Child processes spawned by integration tests inherit the scrubbed environment.
+for _ambient in ("FORCE_COLOR", "TTY_COMPATIBLE"):
+    os.environ.pop(_ambient, None)
+
+import optica.utils.logging as olog  # noqa: E402 - after the scrub, deliberately
 
 
 @pytest.fixture(autouse=True)

@@ -930,3 +930,79 @@ For `</dev/null`, `GetFileType` reports **`FILE_TYPE_CHAR`** and
 on Windows. `utils/prompts.py:is_interactive` additionally requires
 `GetConsoleMode` to succeed on Windows; see `notes/build-log.md` § "`is_interactive`
 treated `NUL` as a terminal". POSIX is unaffected (`/dev/null` is not a tty).
+
+### Which environment variables change Rich's output under the test suite
+
+**Date:** 2026-09-13
+**How:** Rich 15.0.0 (`.venv`). Every `environ.get` in
+`rich/console.py` listed with `grep -n "environ"`; then the full suite
+(`pytest tests -m "not slow"`, JUnit XML parsed for exact counts) run once per
+variable from a parent environment with all of them removed —
+`C:\Users\DEN\.claude\jobs\955142b7\tmp\env_matrix.py`.
+**Result — variables Rich reads:** `FORCE_COLOR`, `NO_COLOR`, `TTY_COMPATIBLE`,
+`TTY_INTERACTIVE`, `COLORTERM`, `TERM`, `COLUMNS`, `LINES`, `JUPYTER_COLUMNS`,
+`JUPYTER_LINES`. `is_terminal` reads the environment on every call, but the
+colour system is fixed once in `Console.__init__`.
+
+**Result — suite outcome per variable, before the harness fix** (868 collected):
+
+| Set in the environment | Passed | Failed | Skipped |
+|---|---|---|---|
+| none | 855 | 0 | 13 |
+| `FORCE_COLOR=3` | 824 | **31** | 13 |
+| `TTY_COMPATIBLE=1` | 824 | **31** | 13 |
+| `NO_COLOR=1` | 855 | 0 | 13 |
+| `TTY_INTERACTIVE=1` | 855 | 0 | 13 |
+| `COLORTERM=truecolor` | 855 | 0 | 13 |
+| `COLUMNS=30` | 855 | 0 | 13 |
+| `TERM=dumb` | 855 | 0 | 13 |
+
+Each row sums to 868. The 31 under `FORCE_COLOR=3`, by file: `test_logging` 13,
+`test_main` 6, `test_fetch_command` 5, `test_classify` 4, `test_config_command`
+2, `test_init` 1 (13 + 6 + 5 + 4 + 2 + 1 = 31). By authorship: **17 pass-1 tests,
+14 pass-2 tests**. `TTY_COMPATIBLE=1` fails the same 31.
+**Consequence:** the harness removes exactly those two before
+`optica.utils.logging` is imported (`tests/conftest.py`). After the fix every row
+above, plus all three of `FORCE_COLOR`/`TTY_COMPATIBLE`/`NO_COLOR` together,
+gives 855 passed, 0 failed, 13 skipped — re-run with no scrubbing in the parent,
+so the conftest alone holds.
+
+### What cp1255 can and cannot encode, and what reaches the terminal
+
+**Date:** 2026-09-13
+**How:** `.venv` Python 3.11.9 in Git Bash on the build machine, stdout a pipe:
+```
+python -c "import sys, locale; print(sys.stdout.encoding, sys.stdout.errors, locale.getpreferredencoding(False))"
+python -c "<char>.encode(sys.stdout.encoding)" for each character below
+python -c "print('a—b')" | od -An -tx1
+PYTHONIOENCODING=utf-8 python -c "print('a—b ✓')"
+cmd //c chcp ; kernel32.GetConsoleOutputCP() / GetACP()
+python -c "from optica.utils import logging as olog; olog.out_console.print('5 images → 4 unique')"
+python -c "from optica.utils import logging as olog; olog.err_console.print('5 images → 4 unique')"
+optica fetch -c café,dog --dry-run      (from .smoke/pass2-fetch/project, scratch home)
+```
+**Result:** stdout is `cp1255`, errors `surrogateescape`; console output code
+page 862, ANSI code page 1255.
+
+| Character | Encodable in cp1255 | Bytes |
+|---|---|---|
+| `—` U+2014 em dash | **yes** | `0x97` |
+| `•` U+2022 bullet | **yes** | `0x95` |
+| `✓` U+2713 | no | — |
+| `✕` U+2715 | no | — |
+| `✗` U+2717 | no | — |
+| `⚠` U+26A0 | no | — |
+| `→` U+2192 | **no** | — |
+| `é` U+00E9 | **no** | — |
+
+`print('a—b')` writes `61 97 62 0d 0a`; the terminal (Git Bash, decoding UTF-8)
+shows `a�b`. With `PYTHONIOENCODING=utf-8` it shows `a—b ✓`.
+`out_console.print('… → …')` raises **`UnicodeEncodeError`** (through
+`rich/_win32_console.py` `write_text`); `err_console.print` of the same text
+prints `\u2192` and exits 0. `optica fetch -c café,dog --dry-run` exits 1 with
+`Optica hit an unexpected error: UnicodeEncodeError … '\xe9'`.
+**Consequence:** two different problems that both render badly. The em dash and
+bullet are **not** encoding failures — they encode, and the bytes are misread by
+a UTF-8 terminal behind a pipe. `→` and `é` **are** encoding failures, and on
+stdout they raise. See `notes/build-log.md` § "Correction — the em-dash finding
+had the wrong mechanism".
