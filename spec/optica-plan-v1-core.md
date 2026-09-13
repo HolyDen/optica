@@ -217,7 +217,7 @@ The CLI is a thin entry point: no business logic, it maps commands to components
 
 These apply across the whole CLI surface and govern every command-specific behavior in Part II.
 
-- **Global Typer exception handler — a hard sequencing prerequisite.** A global handler via `app.exception_handler()` catches **`click.UsageError` at the base** — not a named list, since every parser error Typer raises is a `UsageError` subclass and a list goes stale the moment Click adds one — redirecting to prompts where applicable (`MissingParameter` on `--classes`) and producing clean wrapped errors otherwise. `click.Abort` is **not** a `UsageError` and is handled separately, exiting `130` alongside SIGINT. **It must be implemented before any other CLI work ships** — it is the mechanism every flag decision's error behavior executes through. A raw Typer traceback must never reach the user.
+- **Global Typer exception handler — a hard sequencing prerequisite.** A global handler catches **`click.UsageError` at the base** — not a named list, since every parser error Typer raises is a `UsageError` subclass and a list goes stale the moment Click adds one — redirecting to prompts where applicable (`MissingParameter` on `--classes`) and producing clean wrapped errors otherwise. `click.Abort` is **not** a `UsageError` and is handled separately, exiting `130` alongside SIGINT. **It must be implemented before any other CLI work ships** — it is the mechanism every flag decision's error behavior executes through. A raw Typer traceback must never reach the user.
 - **Flag (no value) behavior.** `--classes`/`-c` with no value surfaces the class-name prompt; `--output` with no value falls to its silent default `./optica-output/`; every other flag with no value produces a wrapped error with an example. Fallback hierarchy: try prompt → clean wrapped error → **never** a raw Typer traceback. Wherever the class-name prompt would fire, `--yes` errors rather than hanging on it. *(Stated as a condition rather than a list of commands: a command that later gains the prompt inherits the rule, and one that resolves classes without prompting — `train` against an existing `dataset/` — is never caught by it.)*
 - **Validate all flag values upfront; report all invalid at once.** Never fail on the first invalid value only — a typo loop of fix-one-rerun-hit-the-next is a poor experience for any audience.
 - **Fixed-value flags always list valid options in errors.** Applies to `--source`, `--mode`, `--model` (and, at fast-follow, `--format`). Include "Default: X" where applicable.
@@ -239,7 +239,7 @@ These apply across the whole CLI surface and govern every command-specific behav
 
 Two rules govern every class name the product accepts, on every surface — **from `-c`, from a manifest's `class` column, and, at fast-follow, added live in the browser** — because every class name becomes a folder. They are stated here, beside the comma convention that forward-references them, rather than in the browser subsection that renders them — the first command accepting class names is `optica fetch`, which never opens a browser.
 
-1. **Filesystem-safe class-name validation.** Every class name must be non-empty, **must not be `.`, `..`, or any name composed only of dots** — those are path components, not names, and `..` would resolve the class folder outside `dataset/` — contain no path separators (`/`, `\`), no comma (reserved as the value separator), and **none of `? * : | " < >`, which Windows rejects in filenames**, stay within a 50-character cap, and avoid reserved OS filenames blocked outright (`con`, `aux`, `nul`, `prn`, `com1`–`com9`, `lpt1`–`lpt9` — Windows reserved names, relevant given Windows is a best-effort V1 target; the character exclusions above cover the same target for the same reason). **A name failing any of these is a hard error naming it, and every failing name is listed** (truncating past 10, as the class-subset exclude list does) — no name is rewritten to make it pass, since a name that is not a single safe path component is unguessable rather than correctable. No blocklist or overlap check applies (`optica label` never fetches).
+1. **Filesystem-safe class-name validation.** Every class name must be non-empty, **must not be `.`, `..`, or any name composed only of dots** — those are path components, not names, and `..` would resolve the class folder outside `dataset/` — contain no path separators (`/`, `\`), no comma (reserved as the value separator), and **none of `? * : | " < >`, which Windows rejects in filenames**, stay within a 50-character cap, **not begin with `-`** — a flag spelling, which the parser binds as a value rather than rejecting — and avoid reserved OS filenames blocked outright (`con`, `aux`, `nul`, `prn`, `com1`–`com9`, `lpt1`–`lpt9` — Windows reserved names, relevant given Windows is a best-effort V1 target; the character exclusions above cover the same target for the same reason). **A name failing any of these is a hard error naming it, and every failing name is listed** (truncating past 10, as the class-subset exclude list does) — no name is rewritten to make it pass, since a name that is not a single safe path component is unguessable rather than correctable. No blocklist or overlap check applies (`optica label` never fetches).
 2. **Case-insensitive duplicate blocking.** A name matching an existing class under case-insensitive comparison is blocked — folder names are effectively case-insensitive on macOS (default) and Windows, so allowing both `cat` and `Cat` as distinct classes would work on Linux and silently misbehave (folder collision) elsewhere. A case-variant (`Cat` when `cat` exists) is an inline error; an exact re-add (`cat` when `cat` exists) is a neutral inline confirmation, not an error. Both dispositions above describe the browser, where names arrive one at a time. Under `-c`, or from a manifest's `class` column, the whole list arrives at once and there is no inline surface, so: **a case-variant is a hard error at parse**, naming both colliding names; **exact duplicates collapse silently**, and the resolved class list is what gets reported. Nothing is lost by collapsing `cat,cat`; allowing `cat,Cat` is the folder collision the rule exists to prevent.
 
 ---
@@ -417,9 +417,9 @@ The extras prompt (interactive, all selected):
 Install PyTorch stack? [Y/n]: Y
   Enables: optica train, optica export, optica run
   Which variant?
-    auto  — hardware-detected (~1–2GB)
-    cpu   — CPU only (~1GB)
-    gpu   — GPU/CUDA (~2GB)
+    auto  — hardware-detected (~250MB–2.5GB)
+    cpu   — CPU only (~250MB)
+    gpu   — GPU/CUDA (~2–2.5GB)
   [auto/cpu/gpu] (default: auto):
 
 [Y/n] Browser UI — optica label, optica curate, optica run (label/curate modes).
@@ -440,14 +440,14 @@ Torch uses two consecutive prompts (Y/N, then variant) because size is knowable 
     Venv: .venv (created)
 
   Extras
-    PyTorch stack (auto-detect → CUDA 13.0)   ~1–2GB
+    PyTorch stack (auto-detect → CUDA 13.0)   ~250MB–2.5GB
     Browser UI                                ~5MB
     CLIP filtering                            ~600MB
 
   API keys
     Flickr         — skipped
 
-  Total download: ~1.6–2.6GB
+  Total download: ~0.9–3.1GB
 
 ─────────────────────────────────────────
   Proceed with installation? [Y/n]:
@@ -481,15 +481,15 @@ EXTRAS_REGISTRY = {
     # torch variants — universal (every task's train/export needs them) and
     # mutually exclusive within group "torch":
     "torch-auto": {"display_name": "PyTorch stack (auto-detect)", "default": True,
-                   "group": "torch", "universal": True, "size_estimate": "~1–2GB",
+                   "group": "torch", "universal": True, "size_estimate": "~250MB–2.5GB",
                    "index_url": None,   # torch-auto only: resolved in the do phase from the decide-phase scan
                    "enables": ["optica train", "optica export", "optica run"]},
     "torch-cpu":  {"display_name": "PyTorch stack (CPU only)", "default": False,
-                   "group": "torch", "universal": True, "size_estimate": "~1GB",
+                   "group": "torch", "universal": True, "size_estimate": "~250MB",
                    "index_url": "https://download.pytorch.org/whl/cpu",
                    "enables": ["optica train", "optica export", "optica run"]},
     "torch-gpu":  {"display_name": "PyTorch stack (GPU)", "default": False,
-                   "group": "torch", "universal": True, "size_estimate": "~2GB",
+                   "group": "torch", "universal": True, "size_estimate": "~2–2.5GB",
                    "index_url": "https://download.pytorch.org/whl/cu<XXX>",  # CUDA build pinned at the pre-implementation gate
                    "enables": ["optica train", "optica export", "optica run"]},
 }
@@ -756,7 +756,7 @@ R resumes from the last incomplete step; C shows a step selector — the four pi
 #### Fetch sources
 
 - **Flickr** — official `flickr.photos.search`. `FLICKR_API_KEY` (requires a Flickr Pro subscription). 3,600 requests/hour per key; same pause/resume pattern.
-- **Open Datasets** — Google Open Images. The label mapping and metadata come from **GCS** via httpx; **the image bytes do not** — Open Images is a list of URLs to images hosted elsewhere, predominantly `staticflickr.com`, and the bytes are fetched from there. **No API key on either path.** A ~100KB label-mapping file is cached in `~/.optica/` on first use and verified on every load (deleted and re-downloaded if corrupt); its exact name and format are deliberately unspecified here, being a pre-implementation-gate item — see the Open Images bucket-structure note under Implementation Notes. **Per image, `Thumbnail300KURL` is preferred, with `OriginalURL` as the fallback where that column is absent** — the thumbnails are ~640×480, comfortably above the 384px maximum any backbone consumes. They are regenerated on request, so the same URL is not guaranteed to return identical bytes twice. `training_data_hash` is unaffected, covering structure rather than contents. **Dead URLs are expected rather than exceptional**, the list being older than the current state of the hosting site, so the fetch **fills to target**: candidates are drawn until `--images-per-class` valid images are collected or the class's candidate pool is exhausted, whichever comes first. **An exhausted pool needs no new failure path** — the shortfall reaches the imbalance warning and the post-deduplication floor re-check like any other short class. Soft cap: warn if `--images-per-class` exceeds `max_open_datasets_per_class` (default 500) per class, before fetch begins; `--yes` auto-confirms.
+- **Open Datasets** — Google Open Images. The label mapping and metadata come from **GCS** via httpx; **the image bytes do not** — Open Images is a list of URLs to images hosted elsewhere, predominantly `staticflickr.com`, and the bytes are fetched from there. **No API key on either path.** A label-mapping file is cached in `~/.optica/` on first use and verified on every load (deleted and re-downloaded if corrupt); its exact name and format are deliberately unspecified here, being a pre-implementation-gate item — see the Open Images bucket-structure note under Implementation Notes. **Per image, `Thumbnail300KURL` is preferred, with `OriginalURL` as the fallback where that value is empty** — the thumbnails are ~640×480, comfortably above the 384px maximum any backbone consumes. They are regenerated on request, so the same URL is not guaranteed to return identical bytes twice. `training_data_hash` is unaffected, covering structure rather than contents. **Dead URLs are expected rather than exceptional**, the list being older than the current state of the hosting site, so the fetch **fills to target**: candidates are drawn until `--images-per-class` valid images are collected or the class's candidate pool is exhausted, whichever comes first. **An exhausted pool needs no new failure path** — the shortfall reaches the imbalance warning and the post-deduplication floor re-check like any other short class. Soft cap: warn if `--images-per-class` exceeds `max_open_datasets_per_class` (default 500) per class, before fetch begins; `--yes` auto-confirms.
 
 *(The per-source endpoint, rate-limit and authentication verification items under Implementation Notes are implementation-verification markers on the pre-implementation gate, not open design. **Bing Image Search was a V1 source until Microsoft retired the Bing Search APIs on 11 August 2025**; no keyed web-image source replaces it in V1 — Brave and SerpApi were both considered and rejected as new vendor commitments inside V1 — and a general web-image source is a fast-follow item.)*
 
@@ -1057,10 +1057,10 @@ The steps are classification-specific as written, but `engine.py` must be built 
 
 | Flag | timm name | Layers to unfreeze in Phase 2 |
 |---|---|---|
-| `efficientnet-small` | `efficientnet_b0` | Last 2 MBConv blocks (`blocks[5]`, `blocks[6]`) + `conv_head` |
-| `efficientnet-large` | `efficientnet_b4` | Last 2 MBConv blocks + `conv_head` |
+| `efficientnet-small` | `efficientnet_b0` | Last 2 MBConv blocks (`blocks[5]`, `blocks[6]`) + `conv_head` + `bn2` |
+| `efficientnet-large` | `efficientnet_b4` | Last 2 MBConv blocks + `conv_head` + `bn2` |
 | `resnet` / `resnet-50` | `resnet50` | Last residual layer (`layer4`) |
-| `mobilenet` / `mobilenet-large` | `mobilenetv3_large_100` | Last 3 InvertedResidual blocks |
+| `mobilenet` / `mobilenet-large` | `mobilenetv3_large_100` | Last 3 blocks |
 
 **Input resolution and normalization follow the backbone, resolved from timm.** `timm.data.resolve_model_data_config(model)` returns `input_size`, `mean`, `std`, `interpolation`, `crop_pct` and `crop_mode` for the selected model, and those values drive both the training transforms and the exported preprocessing metadata — all six are exported, not `input_size` alone. **Augmentation is on by default and replaces the centre crop with a random one**, so `crop_pct` and `crop_mode` configure the exported preprocessing rather than the default training transform. The six values are resolved per model rather than shared across the four backbones: `efficientnet_b0`, `resnet50` and `mobilenetv3_large_100` are 224px models, while `efficientnet_b4` (`efficientnet-large`) trains at **320** and tests at **384** under its default `ra2_in1k` tag. **V1 uses the training `input_size` throughout** — training, validation, export and inference from the exported artifact all preprocess at the same resolution, so `model_info.json`'s `input_size` is the single number a consumer needs and no stage has to choose between two. `efficientnet_b4`'s 384px test size is deliberately unused in V1; one resolution per model costs a little top-1 accuracy on that one backbone and removes the question entirely. Fixing all four at 224 was rejected — it would run the one model users select *for* accuracy below its pretrained resolution, and would make `model_info.json`'s `input_size` a constant field. *Accepted cost: `efficientnet-large` processes roughly twice the pixels per image, which matters most on CPU.*
 
@@ -1524,7 +1524,7 @@ OpticaWarning (UserWarning)        # API warning category — deliberately not a
 
 Assembled from four decisions:
 - **`OpticaMissingExtraError` has three children in V1, not four** — `OpticaONNXError` travels with ONNX to the fast-follow (nothing can request a format that doesn't exist). The one nested branch lets a caller catch any missing-extra condition at one point.
-- **`OpticaCLIPError` means only "the `optica[clip]` extra is missing"**, consistent with its siblings. Its former second role — CLIP **model-load failure** — is split off into the **new `OpticaCLIPLoadError`**, parented to `OpticaError` (not `OpticaFetchError`, because CLIP weights load during training and inference too, so filing it under fetch would misclassify most occurrences). The two need different messages — *install `optica[clip]`* vs a corrupt-weights report — and one message cannot serve both. **On corrupt weights Optica deletes and re-downloads them itself**, the same treatment the Open Images label map gets, reporting the cache path it acted on; the path is resolved from open-clip at runtime rather than hardcoded, since the cache is open-clip's and not Optica's to fix in place. *Rejected: instructing the user to delete a file whose location the plan never gives — which is what a 100KB label map is spared and multi-hundred-megabyte weights were not.*
+- **`OpticaCLIPError` means only "the `optica[clip]` extra is missing"**, consistent with its siblings. Its former second role — CLIP **model-load failure** — is split off into the **new `OpticaCLIPLoadError`**, parented to `OpticaError` (not `OpticaFetchError`, because CLIP weights load during training and inference too, so filing it under fetch would misclassify most occurrences). The two need different messages — *install `optica[clip]`* vs a corrupt-weights report — and one message cannot serve both. **On corrupt weights Optica deletes and re-downloads them itself**, the same treatment the Open Images label map gets, reporting the cache path it acted on; the path is resolved from open-clip at runtime rather than hardcoded, since the cache is open-clip's and not Optica's to fix in place. *Rejected: instructing the user to delete a file whose location the plan never gives — which is what a label map is spared and multi-hundred-megabyte weights were not.*
 - **The browser-server class is `OpticaBrowserServerError`**, chosen over bare `OpticaServerError`. The names never literally collided; the *meanings* did — "web" and "server" point at the same subsystem, so the qualifier is what separates them. It names the subsystem rather than a caller: `optica label` and `optica curate` share one server, and a caller-named class would misreport half its failures. Pattern with `OpticaCLIPLoadError`: **descriptive names for operational failures, extra-named classes for missing dependencies.** (Renaming `OpticaWebError` instead was rejected — it is the regular member of the missing-extra siblings, so changing it would add the irregularity rather than remove it.)
 - **`OpticaSetupError` exists because setup is a subsystem, not a caller.** Same reasoning that produced `OpticaBrowserServerError` — one class for one subsystem, named descriptively because its failures are operational rather than dependency-related. Without it, setup's hard errors (no venv found in non-interactive mode, more than one found, an active environment Optica is not running from, hardware detection failure, install failure) fit nothing in the hierarchy, and setup is the plan's largest interactive subsystem and its documented CI entry point.
 
@@ -1615,7 +1615,7 @@ image_hash = hashlib.md5(image_data).hexdigest()
 
 Items requiring verification or special attention during implementation. **Notes 1–6, 9–11, 13, 14, 19 and 20 are work** — verification against external sources, or cross-cutting instructions with no single owning section. **Notes 7, 8, 12, 15, 16, 17 and 18 are cross-references**: each names a decision specified in full in the section that owns it and exists only to make it findable from here. A cross-reference carries no body of its own, so there is nothing for it and its owning section to drift apart on. *(Numbering is preserved — notes are referenced by number elsewhere in this document.)*
 
-1. **Global Typer exception handler — build first.** A global `app.exception_handler()` catches **`click.UsageError` at the base** (every parser error Typer raises subclasses it), redirecting to prompts where applicable (`MissingParameter` on `--classes`) and producing clean wrapped errors otherwise; `click.Abort` is handled separately and exits `130`. It must be implemented **before any other CLI work ships** — every other flag decision's error behavior executes through it.
+1. **Global Typer exception handler — build first.** A global handler catches **`click.UsageError` at the base** (every parser error Typer raises subclasses it), redirecting to prompts where applicable (`MissingParameter` on `--classes`) and producing clean wrapped errors otherwise; `click.Abort` is handled separately and exits `130`. It must be implemented **before any other CLI work ships** — every other flag decision's error behavior executes through it.
 2. **Global lock file — hard-block concurrent commands.** `~/.optica/optica.lock` holds PID + command name + run ID. Lock present with a live PID → hard block:
    ```
    ✕ Optica is already running in another terminal.
