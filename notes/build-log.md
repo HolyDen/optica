@@ -870,3 +870,23 @@ error — `--ci` does no environment detection at all, so the two must not share
 code path.
 
 **Next:** unchanged — pass 2, `input/` except `clip.py`, once CI is green.
+
+### CI actions bumped to the Node 24 majors — a human edit between passes 1 and 2
+**Pass:** between 1 and 2   **Date:** 2026-09-13   **Where:** `.github/workflows/ci.yml`; affects pass 6
+**Found:** the pass 1 workflow pinned `actions/checkout@v4` and
+`actions/setup-python@v5`. Both target Node 20, which GitHub's runners began
+forcing onto Node 24 on 16 June 2026 and remove entirely on **23 September
+2026** (github.blog changelog `2025-09-19-deprecation-of-node-20-on-github-actions-runners`,
+editor's note of 25 August 2026). All three legs were green but emitted the
+deprecation warning on every run.
+**Action taken:** bumped to `actions/checkout@v6` and `actions/setup-python@v6`,
+both of which ship on Node 24. Committed and pushed by the human between passes;
+no agent involved. CI green on all three runners, warning gone.
+**Consequence for pass 6:** `notes/passes/pass-6.md` says to **extend** the
+minimal workflow from pass 1. The workflow you will find is not byte-identical
+to the one pass 1 committed — the action versions above are newer, deliberately,
+and must not be reverted. Extend from what is in the file, not from what pass 1's
+diff shows. `pass-6.md` is not corrected: derived artifact, log-only, per the
+same rule applied to `pass-4.md` and `pass-0.md` in pass 0.
+**Reversible?** Yes, but do not — reverting reintroduces a runtime removed from
+the runners.
