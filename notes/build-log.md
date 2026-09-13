@@ -1881,3 +1881,29 @@ is installed by the human before launch, and that pass 0 task 4 needed torch
 first.
 **Not corrected:** `pass-0.md` and `pass-2.md`. Their passes are closed and the
 claims are historical. See the addendum §1.11 for the full pattern.
+
+### Pass 2 — CI green on all three runners
+**Pass:** 2   **Date:** 2026-09-13
+**Reported by the human**, after pushing: CI is green on all three runners
+(ubuntu, macos, windows). The agent cannot see CI runs (`git push` and the
+Actions UI are outside its reach), so this is a relayed result, not one the agent
+observed. At the time of the report the local branch matched
+`origin/build/v0.2.0` at `d85f353` (0 commits ahead, 0 behind), which includes
+every pass-2 commit through `c3fcdeb`.
+**What this confirms that local runs could not:** the two platform-independent
+constructions this pass relied on hold off Windows — the `FORCE_COLOR` /
+`TTY_COMPATIBLE` scrub in `tests/conftest.py`, and
+`tests/integration/test_output_encoding.py`, which was verified locally on
+Windows only. It also confirms the Windows-only `is_interactive` console check
+and its module-level platform branch are clean under mypy on the POSIX runners.
+**Closes** the "CI: pushed by the human; result pending" line of *"Pass 2 —
+closed (final)"*, above.
+
+**Supersedes one handoff in that entry:** its first pass-3 row says
+`pass-3.md` "is stale" and was "not corrected". Since then the human corrected it
+(`e6f7e09`, entry immediately above): "Done when" now reads *write back through
+their session files*. **Pass 3 should work from `pass-3.md` as it now stands.**
+The warning in that row stands unchanged — never write to a manifest; its
+content hash is part of the session ID.
+
+**Pass 2 is complete.** Next: pass 3 — `server/`.
