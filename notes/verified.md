@@ -730,3 +730,176 @@ annotated-types, iniconfig, packaging, pathspec, pluggy, mypy-extensions.
 **`click` is absent** — see the vendoring entry above.
 **No torch, torchvision, timm or scikit-learn**, which is what makes pass 1's
 milestone a real check.
+
+---
+
+## Pass 2
+
+### Flickr API — endpoint, search method, limits, key access, response shape
+
+**Date:** 2026-09-13
+**How:** Flickr's own pages, fetched with `curl -sL` and read as text, plus one
+live probe of the REST endpoint with a deliberately invalid key (no real key
+exists — `.env` is empty, and was not opened):
+```
+https://www.flickr.com/services/api/request.rest.html
+https://www.flickr.com/services/api/flickr.photos.search.html
+https://www.flickr.com/services/api/response.json.html
+https://www.flickr.com/services/api/misc.urls.html
+https://www.flickr.com/services/developer/api/
+https://www.flickr.com/services/api/misc.api_keys.html
+https://www.flickrhelp.com/hc/en-us/articles/4404070036884-Flickr-API   (page reads "Updated August 06, 2025")
+curl -s "https://www.flickr.com/services/rest/?method=flickr.photos.search&api_key=0000000000000000&text=cat&format=json&nojsoncallback=1&per_page=1"
+curl -s "https://www.flickr.com/services/rest/?method=flickr.photos.search&text=cat&format=json&nojsoncallback=1"
+```
+**Result:**
+
+| Item | Flickr's documentation says | Source |
+|---|---|---|
+| REST endpoint | `https://www.flickr.com/services/rest/` — plain GET or POST | request.rest.html |
+| Search method | `flickr.photos.search`; "This method does not require authentication" (an `api_key` is still **required**) | flickr.photos.search.html |
+| Arguments Optica uses | `api_key` (required), `text` (free text over title/description/tags), `sort` (`relevance` is a valid value; default `date-posted-desc`), `content_types` (`0` = photos), `media` (`photos`), `safe_search` (`1` = safe; "Un-authed calls can only see Safe content"), `extras` (includes `url_z`, `url_c`, `url_m`, `url_n`, `url_o`, …), `per_page` (default 100, **max 500**), `page` | flickr.photos.search.html |
+| Result ceiling | "Flickr will return at most the first **4,000 results** for any given search query" | flickr.photos.search.html |
+| Rate limit | "If your application stays under **3600 queries per hour across the whole key** … you'll be fine." Abuse leads to key expiry | developer/api/ |
+| Caching | "Your application can cache API results and images for up to 24 hrs" | developer/api/ |
+| Key access | "**The ability to request API keys is available exclusively to Pro subscribers.**" Non-commercial and commercial keys both exist; commercial use needs prior permission | flickrhelp.com article (2025-08-06); misc.api_keys.html |
+| Free-account downloads | "Downloading original and large-size photos (**larger than 1024px**) from Free accounts is restricted via the Flickr API" | flickrhelp.com article |
+| JSON format | `format=json` wraps in `jsonFlickrApi(...)`; success carries `"stat": "ok"`, failure carries `"stat": "fail"`, `"code"`, `"message"` | response.json.html |
+| Image URL format | `https://live.staticflickr.com/{server-id}/{id}_{secret}_{size-suffix}.jpg`; suffix `z` = 640px longest edge, `c` = 800, `b` = 1024, `m` = 240; `h` (1600) and above have their own secret and "photo owner can restrict" | misc.urls.html |
+| Search error codes | `100` Invalid API Key; `105` Service currently unavailable; `10` search API not currently available; `3` parameterless searches disabled | flickr.photos.search.html |
+
+**Live probe result — both requests, verbatim:**
+
+```
+{"stat":"fail","code":100,"message":"Invalid API Key (Key has invalid format)"}
+HTTP 200
+```
+
+**A failed call returns HTTP `200`.** The status line cannot detect an API
+failure; only `stat` in the body can. `nojsoncallback=1` is honoured (the body
+is bare JSON, no `jsonFlickrApi(...)` wrapper). A missing `api_key` returns the
+same code 100 as a malformed one.
+
+**Not found in Flickr's documentation:** what a *rate-limited* call receives —
+no error code for it is listed under `flickr.photos.search`. The adapter
+therefore treats HTTP `429`/`5xx` and `stat: fail` codes `10`/`105` as
+retryable, and every other `stat: fail` as a hard `OpticaFetchError`.
+
+**Consequence:** the plan's three claims hold — official `flickr.photos.search`,
+`FLICKR_API_KEY` requiring a Pro subscription, 3,600 requests per hour per key.
+The Flickr adapter checks `stat`, never the HTTP status alone; requests
+`extras=url_z,url_c,url_m` so no second call per photo is needed; caps
+`per_page` at 500; and stops paging at 4,000 results. `url_z` (640px) is
+preferred — it matches the ~640×480 Open Images thumbnails and stays under the
+1024px free-account restriction. **The adapter is written against this record
+and never run against a real key.**
+
+### Open Images — which files map a class to image URLs, and what they cost
+
+**Date:** 2026-09-13
+**How:**
+```
+curl -s https://storage.googleapis.com/openimages/web/download_v7.html     # 83 file links extracted
+curl -sI <each link>                                                       # Content-Length, x-goog-hash
+curl -s -D - -r 0-99 <label and metadata CSVs>                             # range support
+curl -s -r <offset>-<offset+300> <CSV> at 0/25/50/75/100%                  # sort order
+curl -s -r 0-67108863 v7/oidv7-train-annotations-human-imagelabels.csv     # + 4 x 32 MiB at 20/45/70/95%
+curl -s -r 0-67108863 v5/train-annotations-human-imagelabels-boxable.csv
+curl -s -r 0-8388607 and 8388608-16777215 v6/oidv6-train-images-with-labels-with-rotation.csv
+curl -s -r 0-16777215 2018_04/image_ids_and_rotation.csv
+```
+Samples parsed by `.venv/Scripts/python.exe` (`csv`, `httpx` 0.28.1) under
+`C:\Users\DEN\.claude\jobs\955142b7\tmp\`. All URLs are under
+`https://storage.googleapis.com/openimages/`.
+
+**Result 1 — the image-metadata CSVs carry no class labels.** Their 12 columns
+(task 3, above) are URLs, licence and author fields. Mapping a class to images
+needs a *label-annotation* file as well, joined on `ImageID`.
+
+**Result 2 — candidate files, per item** (`Content-Length`):
+
+| Role | File | Bytes | MiB |
+|---|---|---|---|
+| label mapping, full | `v7/oidv7-class-descriptions.csv` | 501,178 | 0.5 |
+| label mapping, boxable | `v7/oidv7-class-descriptions-boxable.csv` | 12,064 | 0.0 |
+| labels, V7 human-verified, train | `v7/oidv7-train-annotations-human-imagelabels.csv` | 2,735,816,020 | 2,609.1 |
+| labels, V7 human-verified, val | `v7/oidv7-val-annotations-human-imagelabels.csv` | 28,392,297 | 27.1 |
+| labels, V7 human-verified, test | `v7/oidv7-test-annotations-human-imagelabels.csv` | 93,606,939 | 89.3 |
+| labels, boxable (600 classes), train | `v5/train-annotations-human-imagelabels-boxable.csv` | 376,764,810 | 359.3 |
+| metadata, train images with labels | `v6/oidv6-train-images-with-labels-with-rotation.csv` | 2,684,720,962 | 2,560.3 |
+| metadata, boxable train | `2018_04/train/train-images-boxable-with-rotation.csv` | 638,407,721 | 608.8 |
+| metadata, all subsets | `2018_04/image_ids_and_rotation.csv` | 3,348,497,077 | 3,193.4 |
+
+**Result 3 — access properties.** Every CSV probed answers `Range` with
+`206 Partial Content` and `Accept-Ranges: bytes`, and carries
+`x-goog-hash: md5=<base64>`. For both label-mapping files the header MD5 equals
+the MD5 of the downloaded bytes:
+
+| File | `x-goog-hash` md5 | MD5 of downloaded bytes |
+|---|---|---|
+| `oidv7-class-descriptions.csv` | `Kqy5GbIHxQ8qCEgipcJzbA==` | `Kqy5GbIHxQ8qCEgipcJzbA==` |
+| `oidv7-class-descriptions-boxable.csv` | `xefLa4XQU5shBdstGXRoHw==` | `xefLa4XQU5shBdstGXRoHw==` |
+
+**Result 4 — sort order.** Both **label** files are sorted by `ImageID`
+(`000002b66c9c498e` first, `fffffdaec951185d` last, monotone at every probe).
+The **metadata** files are **not** — first rows `4fa8054781a4c382`,
+`d05c3e451f79174d`, and the 25/50/75% probes in no order. A metadata row cannot
+be located by binary or interpolation search over byte ranges; only by reading.
+
+**Result 5 — `oidv7-class-descriptions.csv`.** Header `LabelName,DisplayName`,
+CRLF line endings, no BOM. **20,931 classes.** **Zero** display names are
+shared by two MIDs, exact or case-folded, so display name → MID is unambiguous.
+13 display names contain a comma (quoted); none contains an underscore.
+`Cat` = `/m/01yrx`, `Dog` = `/m/0bt9lr`, `Golden retriever` = `/m/01t032`,
+`Pug` = `/m/016wkx`, `Hamster` = `/m/03qrc`. `Golden retriever`, `Pug` and
+`Tulip` are **absent** from the 600-class boxable list; `Cat`, `Dog`, `Hamster`
+and `Screwdriver` are present.
+
+**Result 6 — positive-label density is uneven along the V7 train file.**
+
+| Window | Size | Rows | Images | Rows/image | Cat | Dog | Golden retriever | Pug | Hamster | Screwdriver |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0% | 64 MiB | 1,464,401 | 7,475 | 195.9 | 46 | 83 | 1 | 2 | 3 | 2 |
+| 20% | 32 MiB | 729,903 | 18,027 | 40.5 | 112 | 203 | 14 | 6 | 1 | 0 |
+| 45% | 32 MiB | 718,683 | 63,071 | 11.4 | 407 | 733 | 72 | 16 | 1 | 1 |
+| 70% | 32 MiB | 718,070 | 146,645 | 4.9 | 1,112 | 1,799 | 69 | 31 | 17 | 0 |
+| 95% | 32 MiB | 711,415 | 198,022 | 3.6 | 1,785 | 2,845 | 64 | 59 | 22 | 4 |
+
+Counts are `Confidence` 1 rows. Pooled over the four 32 MiB windows (128 MiB,
+4.91% of the file): Cat 3,416 → ~69,600 positives in the file; Golden retriever
+219 → ~4,460; Pug 112 → ~2,280; Hamster 41 → ~840; Screwdriver 5 → ~100. The
+pooled cells are the column sums of rows 20–95% (Cat 112+407+1,112+1,785 =
+3,416). **Reading from the top of the file and stopping early samples the
+sparsest region first** — 46 cats in the first 64 MiB, 1,785 in 32 MiB at 95%.
+
+**Result 7 — the V6 metadata file covers the V7 train label images.** Of
+45,838 sampled `v6/…with-labels…` rows, the 2,740 whose `ImageID` fell inside a
+label window's ID range were **all** present in that window (2,740 of 2,740).
+Implied coverage of the windows' 433,240 label images: 438,460 rows, 101.2% —
+complete within sampling noise. `2018_04/image_ids_and_rotation.csv` (~9.18M
+rows, all three subsets) over-covers: 2,393 of its 2,830 in-range rows had
+labels.
+
+**Result 8 — dead thumbnails.** 100 rows sampled at random (seed 7) from a
+22,918-row window of the V6 metadata file; `Thumbnail300KURL` fetched
+(`OriginalURL` where empty), redirects followed, sequentially:
+
+| Outcome | Count |
+|---|---|
+| `200 image/jpeg` | 82 |
+| `404 text/html` | 14 |
+| `410 text/html` | 4 |
+| **Total** | **100** |
+
+Request hosts: `c1`–`c8.staticflickr.com` 98, `farm3`/`farm7.staticflickr.com`
+2 (the two `OriginalURL` fallbacks); no redirect changed host. Live bodies
+33,088 – 255,380 B, median 91,029. 100 requests took 44.0 s. In the window,
+566 of 22,918 rows (2.47%) had an empty `Thumbnail300KURL` — matching task 3's
+539 of 21,856 — and **no `Title` contained a newline**.
+
+**Consequence:** the acquisition strategy chosen from these numbers is logged
+in `notes/build-log.md` § "Open Images image-URL acquisition strategy". The
+facts it rests on: labels are needed in addition to metadata; labels are sorted
+and range-addressable, metadata is not; density depends on file position, so
+sampling must spread across the file; ~18% of URLs are dead, so the pool needs
+slack; the label map's integrity can be verified against GCS's own MD5.

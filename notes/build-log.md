@@ -999,3 +999,107 @@ belong in a correction to an unverified assertion.
 reason for excluding Click is now stronger than the one originally given:
 adding it installs a second `UsageError` class alongside the vendored one, and
 every `except` silently stops firing.
+
+---
+
+## Pass 2
+
+**Read at start:** this file in full (including the four between-pass entries),
+`notes/verified.md`, `notes/passes/pass-2.md`, and the plan as amended on
+2026-09-13 — §§ "Input & Acquisition" in full, "CLI Layer & Conventions",
+"Configuration", "Labeling & Curation" (staging and session shapes),
+"Exceptions", "Python API" (result and prompt rules), "Implementation Notes",
+"Known Constraints" and the flag reference. Amended l.242, l.759 and l.1527 were
+read as they stand now.
+
+### Open Images image-URL acquisition strategy
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/openimages.py`, used by `input/fetch.py`
+**Missing:** the plan (l.759, as amended) says the label mapping and metadata
+come from GCS and that the label map is cached and verified, and deliberately
+names neither the file nor how a class reaches its image URLs. Handed to this
+pass by the amendment session's item 2.
+**Measured first** (all in `notes/verified.md` § "Open Images — which files map
+a class to image URLs"): the metadata CSVs have **no label column**, so a label
+file must be joined in; the V7 train label file (2,609.1 MiB) is **sorted by
+`ImageID`** and range-addressable, while the V6 metadata file (2,560.3 MiB) is
+**in no order**; positive density varies ~50× along the label file; ~18% of
+thumbnail URLs are dead; GCS returns an MD5 for every object.
+
+**The four candidates, and what happened to each:**
+
+| Candidate | Verdict | Why |
+|---|---|---|
+| Stream the metadata CSV | **Rejected as the whole strategy** | Alone it cannot answer "which images are cats" — it has no labels. Streamed together with the label file, every fetch reads up to 5.2 GiB. |
+| Range-query it | **Adopted for the label file only** | The label file is sorted, so any byte window is a clean sample of the ID space. The metadata file is not sorted, so no search over its ranges exists. |
+| Per-class annotation files | **Rejected — they do not exist** | None of the 83 files linked from `download_v7.html` is per class. |
+| Cache a derived index | **Adopted per class, not globally** | A global index means a 5.2 GiB first download before the first fetch and hundreds of MiB on disk; the 600-class boxable variant (~1 GiB) lacks `Golden retriever`, `Pug` and `Tulip`. Per class, the cache holds only what a fetch for that class already found. |
+
+**Assumed — the strategy built:**
+1. **Vocabulary:** `v7/oidv7-class-descriptions.csv` (20,931 classes), cached at
+   `~/.optica/openimages/`, with the GCS `x-goog-hash` MD5 stored beside it and
+   **checked on every load**; a mismatch deletes and re-downloads it with a
+   status line (Implementation Note 13). Class names match display names
+   case-insensitively, with `_` read as a space (`golden_retriever` →
+   `Golden retriever`). An unknown name is a hard error listing every unknown
+   name with close matches — before any prompt, confirmation or download.
+2. **Candidates — striped range reads over the V7 train human-verified label
+   file.** The file is cut into 64 equal stripes read 1 MiB at a time,
+   round-robin, keeping `Confidence == 1` rows for the requested MIDs. Stripes
+   exist because density is position-dependent: reading from byte 0 would
+   sample the file's sparsest region first. All requested classes share one
+   pass.
+3. **URLs — a streamed join over the V6 metadata file** (which covers the V7
+   train label images, Result 7), matching the first 16 bytes of each line
+   against the unresolved candidate IDs and parsing only the hits. Stops once
+   every class has enough, so the file is rarely read to the end.
+4. **Balancing the two reads.** Reading more labels makes the metadata join
+   faster, and vice versa. With `n` URLs needed and a class's estimated positive
+   count `P` (from the first round of stripes), the positive target is
+   `s = min(P, max(4n, √(n·P·M/L)))`, which minimises total bytes for sizes
+   `L` (labels) and `M` (metadata).
+5. **Per-class cache** in `~/.optica/openimages/classes/`: the stripe cursors,
+   positives found, URLs resolved, and the metadata cursor, keyed to the two
+   files' ETags — an ETag change discards it. A later fetch of the same class
+   (fetch more, resume, the imbalance prompt's F) continues from the cursors
+   instead of starting again.
+6. **Fill to target (l.759)** draws resolved candidates; when they run out it
+   extends the search (2 → 3 → 4) and draws again. The pool is exhausted only
+   when every stripe is read and every positive's URL has been looked for.
+7. **Informing the user** follows l.855's open-clip precedent: the first
+   label-map download is announced, and the candidate search shows progress in
+   bytes read.
+
+**What it costs — computed, not measured end to end.** From
+`s = min(P, max(4n, √(n·P·M/L)))` with `L` = 2,609.1 MiB, `M` = 2,560.3 MiB,
+`n` = 75 (the default 50 per class × 1.5 slack for dead URLs), and `P` from
+`notes/verified.md` Result 6:
+
+| Class | P (est.) | s | Labels read | Metadata read | Total |
+|---|---|---|---|---|---|
+| Cat | ~69,600 | 2,263 | 84.8 MiB | 84.8 MiB | 169.7 MiB |
+| Golden retriever | ~4,460 | 573 | 335.2 MiB | 335.2 MiB | 670.3 MiB |
+| Pug | ~2,280 | 410 | 468.8 MiB | 468.8 MiB | 937.5 MiB |
+| Hamster | ~840 | 300 | 931.8 MiB | 640.1 MiB | 1,571.9 MiB |
+| Screwdriver | ~100 | 100 | 2,609.1 MiB | 1,920.3 MiB | 4,529.3 MiB |
+
+Each total is its two cells summed from unrounded values, so a displayed pair
+can differ from its total by 0.1 MiB (Cat: 84.8 + 84.8 shown, 169.7 exact).
+Recomputed with `python -c` from the formula after a first draft of this table
+carried four cells rounded from a truncated `s`. Classes fetched together share the label
+read, so a fetch costs about its rarest class. **These are model figures:**
+the stripe reads round up to whole 1 MiB chunks, and `P` comes from a 4.91%
+sample, which for `Screwdriver` is five rows — that row is an order of magnitude,
+nothing finer.
+
+**Why this over the alternatives:** it is the only one of the four that needs
+no multi-GiB step before a common class can fetch, keeps nothing on disk beyond
+what a class's own fetch found, and serves the full 20,931-class vocabulary.
+**What it gives up:** a rare class is expensive — reading ~4.5 GiB to fetch
+`Screwdriver` is a genuine cost, and the design makes it visible (progress in
+bytes) and pays it once per class rather than hiding it. A future global index
+would make that constant; it is recorded here as the alternative to revisit if
+rare-class fetches turn out to be common.
+**Reversible?** Yes. The strategy sits behind one class,
+`OpenImagesIndex`, whose only contract with `fetch.py` is "yield candidate URLs
+for this class, extending on request". A global index replaces it without
+touching the fetch loop, staging, or validation.
