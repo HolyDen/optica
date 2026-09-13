@@ -972,3 +972,30 @@ trail for it.
 **Consequence:** amendment item 8 was **declined** on exactly this ground — see
 `optica-plan-amendment-change-record-2026-09-13.md`. Nothing in the plan needed
 changing. `pass-0.md` is not corrected: derived artifact, pass closed, log-only.
+
+### `CLAUDE.md`'s transitive-Click premise was false
+**Pass:** between 1 and 2   **Date:** 2026-09-13   **Where:** `CLAUDE.md` § "Settled points that the plan leaves implicit"
+**Found:** the file read "They arrive transitively through `typer` and
+`pydantic-settings`, and the plan says so deliberately and twice." Pass 1
+established that Typer 0.27.2 vendors Click as the private `typer._click` and
+declares no dependency on it, so `import click` fails in a Core install. The
+`pydantic` half is true: `pip show pydantic` on 2026-09-13 reports
+`Required-by: pydantic-settings`.
+**Action taken:** corrected in place by the human between passes. Unlike
+`notes/passes/pass-N.md`, `CLAUDE.md` is standing instruction read
+automatically by every remaining pass, so a false premise there is live rather
+than historical. `CLAUDE.md` § "Verify external facts before code depends on
+them" applies to `CLAUDE.md` itself.
+**Why it mattered operationally:** passes 2, 3 and 5 all write CLI-adjacent
+tests. An agent believing Click is importable would reach for
+`click.testing.CliRunner` and hit a `ModuleNotFoundError` with no reason to
+expect it. The replacement names the `typer` equivalents directly.
+**Also removed:** the clause "and the plan says so deliberately and twice."
+Pass 0 verified the plan declares neither package; nobody verified that the
+plan asserts transitivity, and the plan amendment session read the file across
+eleven items without surfacing such a claim. An unverified assertion does not
+belong in a correction to an unverified assertion.
+**The instruction is unchanged.** Core stays at exactly six packages, and the
+reason for excluding Click is now stronger than the one originally given:
+adding it installs a second `UsageError` class alongside the vendored one, and
+every `except` silently stops firing.
