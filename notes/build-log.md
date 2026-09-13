@@ -1103,3 +1103,154 @@ rare-class fetches turn out to be common.
 `OpenImagesIndex`, whose only contract with `fetch.py` is "yield candidate URLs
 for this class, extending on request". A global index replaces it without
 touching the fetch loop, staging, or validation.
+**Checked live, 2026-09-13**, from `.smoke/pass2-index/` with a scratch home:
+`ensure` for Cat and Dog needing 5 URLs each read **64.0 MiB of labels** (65
+requests: 1 probe + 64 stripe chunks) and **13.4 MiB of metadata** (2 requests:
+probe + one stream), found 1,345 and 2,231 candidates, resolved 5 and 7 URLs,
+in 72.3 s. One resolved Dog row had an empty `Thumbnail300KURL` and fell back
+to its `OriginalURL` — the amended per-row rule, exercised against real data.
+
+### Two modules added to the plan's `input/` tree
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/classes.py`, `src/optica/input/openimages.py`
+**Missing:** plan § "Code Structure" lists `local.py`, `fetch.py`,
+`curation.py`, `clip.py`, `validation.py`, `manager.py`, `sessions.py` under
+`input/`. It gives no home for the class-name rules and blocklist, and none for
+Open Images' class list and index.
+**Assumed:** `classes.py` holds both class-name rules, class-count validation,
+the blocklist and the auto-mode class sequence; `openimages.py` holds the label
+map and the candidate index.
+**Why:** the class-name rules are used by `-c`, manifests (`local.py`) and the
+blocklist flow alike, so putting them in any one consumer makes the others
+import sideways. `openimages.py` is ~700 lines of one concern; in `fetch.py` it
+would bury the registry and the fill-to-target loop the plan names as that
+file's discipline. The same sanctioned "placed when built" move pass 1 used for
+`utils/prompts.py`.
+**Reversible?** Yes — moves plus import rewrites.
+
+### `input/__init__.py` added to `test_tree.py`'s `_NO_LOGIC` allowlist
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `tests/unit/test_tree.py`
+**Assumed:** exempt. It holds a docstring and `from __future__ import
+annotations` only; `test_the_exemptions_are_still_empty` fails if it grows code.
+**Why:** same shape as the existing `utils/__init__.py` entry; nothing to assert.
+
+### Blocklist matching: whole name, patterns, and extended terms
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/classes.py:is_blocklisted`
+**Missing:** the plan names categories and a seed list, not a matching rule.
+**Assumed:** case-insensitive match on the **whole** name with `_`/`-` read as
+spaces; patterns for negation (`not`/`non`/`no` as a leading word), placeholders
+(`class_a`, `label_1`, also `category`/`group`/`type`), and single characters or
+lone numbers; 22 extension terms inside the named categories (`others`, `etc`,
+`stuff`, `ok`, `true`, `custom`, …). `bad_apple`, `notebook`, `classroom` pass.
+**Why:** substring matching would blocklist `notebook` and `goodyear`; the plan
+itself expects false positives only of the `positive`/`negative` kind.
+**Reversible?** Yes — one frozenset and three regexes.
+
+### Sub-term image counts apply whether grouped or separated
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/classes.py:_build`
+**Missing:** plan § *Undefinable classes* puts "image count per sub-term" after
+group-or-separate unconditionally, but its explanation ("images_per_class
+becomes a per-sub-term floor rather than a group total") speaks only of the
+grouped case.
+**Assumed:** `max(10, images_per_class // n)` per sub-term in **both** cases.
+**Why:** the sequence as written applies it to both; reading it as group-only
+would add a condition the plan does not state. *Consequence to watch:*
+separated sub-terms fetch fewer images than ordinary classes in the same run,
+which the imbalance warning then reports.
+**Reversible?** Yes — one branch.
+
+### An overlap between a top-level name and a sub-term re-opens the definition
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/classes.py:_reopen`
+**Missing:** the plan says N re-opens "the step that produced the overlapping
+names" — definition prompt for a sub-term, class-list prompt for a top-level
+name — and does not say what a pair of one of each re-opens.
+**Assumed:** only the sub-term's definition prompt, keeping group-or-separate.
+Two top-level names re-open the class list.
+**Why:** the sub-term is the later answer; re-opening both would ask the user
+to redo a class list that was not the problem. **Reversible?** Yes.
+
+### Header-only pre-flight does not see a JPEG cut in half — finding for passes 3 and 4
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/validation.py:inspect_in_place`
+**Found:** measured with Pillow 12.3.0: `Image.verify()` passes a JPEG
+truncated to half its bytes; only `load()` raises `image file is truncated`. A
+truncated PNG *is* caught by `verify()`. The plan specifies header validation
+for pre-flight ("headers validated rather than fully decoded, which is cheap").
+**Assumed:** the plan's header check for files the user owns, as specified. On
+every path where Optica owns the bytes (`process_owned` — fetch writes, copies
+into `dataset/`) the image is fully decoded anyway, so truncation is caught
+there.
+**Consequence:** a truncated JPEG in a `--dataset` read in place, or in a
+`--folder` before labeling, passes pre-flight. Pass 3 will see it as a
+thumbnail that fails to render; pass 4 as a decode error at training time.
+Recorded here so neither is surprised. A test pins the measured behaviour.
+
+### Proposed plan change — class-name rule 1 misses trailing dots, trailing spaces and control characters
+**Pass:** 2   **Date:** 2026-09-13   **Where:** plan § *Class-name rules*, l.242; `src/optica/input/classes.py`
+**Found:** Windows silently strips a trailing `.` or space from a folder name,
+so `cat.` and `cat` are one folder there — the collision rule 2 exists to
+prevent, reached by a route rule 1 does not close. Windows also rejects
+characters 0–31 in names. The plan's rule lists neither. Trailing spaces cannot
+arrive from `-c` (values are trimmed) but can from a manifest.
+**Not implemented:** the plan enumerates the rule, and adding clauses to it is an
+edit to the specification by other means. Nothing is built on the gap.
+**Proposed wording:** add "must not end with `.` or a space, and must contain no
+control characters (U+0000–U+001F)" to rule 1.
+**Reversible?** Trivially — two predicates in `class_name_problem`.
+
+### Auto-fetch staging carries a hidden `.fetch.json` per class
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/fetch.py:fetch_class`
+**Missing:** plan § *Staging shapes* says auto-fetch staging's "shape is the
+directory layout itself". It does not say how a resumed fetch, or a
+Fetch-More, avoids downloading the candidates it already tried.
+**Assumed:** a hidden `.fetch.json` in the class directory records, per source
+and per query, the candidate keys tried and the images delivered (the second is
+what grouped classes need, since their files do not say which sub-term they
+came from). Hidden, so curation's image listing never sees it; inside the class
+directory, so `--clear-staging` and "Start fresh" delete it with the images.
+**Why:** without it, "fetch 10 more" re-downloads the first 50 candidates to get
+past them — and since Open Images thumbnails are regenerated per request, MD5
+would not even recognise them, putting the plan's accepted duplicate gap on the
+normal path instead of the rare one.
+*Rejected: keeping tried keys in the per-class Open Images cache, which would
+survive "Start fresh" and make a fresh start never offer the first images again.*
+**Reversible?** Yes — delete the sidecar and the loop retries from the top.
+
+### Fetched images are deduplicated at the write into staging
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/fetch.py:fetch_class`
+**Missing:** MD5 deduplication "runs once classes are assigned"; on the fetch
+path the class is known at download time.
+**Assumed:** a byte-identical download is not written, and does not count
+toward the target.
+**Why:** the placement rule allows it (the class is assigned), and "fills to
+target" means valid images — counting a duplicate toward the target and
+removing it later would deliver a shortfall the fetch could have filled.
+**Reversible?** Yes.
+
+### Fetch loop parameters
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/fetch.py`
+**Missing:** the plan fixes none of these.
+**Assumed:**
+- Candidates requested per image wanted: **1.5×**, from the measured 18% dead
+  rate plus validation rejects.
+- A dead `Thumbnail300KURL` is **not** retried as `OriginalURL`. The plan's
+  fallback is conditioned on the value being empty, and originals average
+  multiple MB.
+- Downloads: 403/404/410 dead at once; 429/5xx/transport errors retried 3× with
+  backoff, then dead; bodies over 30 MB abandoned.
+- Flickr: `sort=relevance`, `safe_search=1`, `content_types=0`, `media=photos`,
+  `extras=url_z,url_c,url_m` (640px preferred), no licence filter, 1 s between
+  API calls (3,600/h evenly spent), 429 honours `Retry-After`, codes 10/105
+  retried.
+**Why:** each is the conservative reading of a verified fact; none changes a
+user-visible contract. **The Flickr adapter is written but never exercised end
+to end** — no key exists (`.env` is empty; Flickr keys need Pro) — and belongs
+beside pass 1's MPS branch on the list of code not to mistake for tested.
+**Reversible?** Yes — constants at the top of `fetch.py`.
+
+### A reserved device name is refused with any extension
+**Pass:** 2   **Date:** 2026-09-13   **Where:** `src/optica/input/classes.py:class_name_problem`
+**Missing:** the plan lists `con`, `aux`, `nul`, `prn`, `com1`–`com9`,
+`lpt1`–`lpt9`, and does not say whether `con.jpg` counts.
+**Assumed:** it does — the stem before the first dot is compared, case-folded.
+**Why:** Windows reserves the names with any extension, so `con.x` is exactly as
+unusable as `con`; it is the same rule applied as Windows applies it.
+**Reversible?** Yes.
