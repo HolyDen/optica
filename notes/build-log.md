@@ -1859,3 +1859,25 @@ Ruff clean; mypy `strict` clean on 60 files.
 
 **Entries logged this pass: 29** = 19 at the first close + 7 after it + 3 here
 (the stdout-encoding fix, the framing correction, this close).
+### Two unused pass prompts corrected rather than logged
+**Pass:** between 2 and 3   **Date:** 2026-09-13   **Where:** `notes/passes/pass-3.md`, `notes/passes/pass-4.md`
+**Found:** four of the seven pass prompts carry a claim the plan does not
+support. `pass-0.md` (twice) and `pass-2.md` were found while their passes were
+open or closed and were logged, not corrected. `pass-3.md` and `pass-4.md` are
+still unused.
+**Action taken — corrected, departing from the log-only precedent.** Two
+reasons. These prompts have not been used, so correcting them is not rewriting
+a consumed artifact. And a file the agent can re-read survives compaction where
+an opening-message instruction does not — the same argument `CLAUDE.md` makes
+for `notes/verified.md` over conversation. `pass-3.md`'s claim is also the
+dangerous one: writing back through the manifest changes its content hash,
+which is part of the session ID, silently orphaning the user's labeling
+progress.
+**Edits:** `pass-3.md` "Done when" now reads *write back through their session
+files* (plan l.1018, not l.672's disposable input). `pass-3.md` "Read" now
+names `notes/verified.md` and `notes/build-log.md` — it was the only pass
+prompt naming no `notes/` file. `pass-4.md`'s opening now says the torch stack
+is installed by the human before launch, and that pass 0 task 4 needed torch
+first.
+**Not corrected:** `pass-0.md` and `pass-2.md`. Their passes are closed and the
+claims are historical. See the addendum §1.11 for the full pattern.
