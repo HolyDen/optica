@@ -11,6 +11,8 @@ backing is entirely pass 1's.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from optica.cli.main import app
@@ -191,13 +193,59 @@ class TestFlagCombinations:
 
 
 class TestPlanValuesStillToImplement:
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_clear_staging_lists_and_clears_all_staging(self):
-        """Delegates to the Input Manager, which pass 2 builds."""
+    @staticmethod
+    def _stage(home: Path) -> Path:
+        staging = home / ".optica" / "staging"
+        (staging / "cat").mkdir(parents=True)
+        (staging / "cat" / "0001.jpg").write_bytes(b"x")
+        (staging / "dog.partial").mkdir()
+        (staging / "curation.json").write_text('{"version": 1}', encoding="utf-8")
+        return staging
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_clear_staging_confirmation_is_destructive(self):
+    def test_clear_staging_lists_and_clears_all_staging(
+        self, fake_home, interactive, monkeypatch, capsys
+    ):
+        """Delegates to the Input Manager, which pass 2 builds."""
+        staging = self._stage(fake_home)
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+        assert app.invoke_guarded(["config", "--clear-staging"]) == ExitCode.SUCCESS
+        out = capsys.readouterr().out
+        assert "cat — 1 images" in out
+        assert "incomplete fetch" in out
+        assert "Curation session" in out
+        assert staging.is_dir()
+        assert list(staging.iterdir()) == []
+
+    def test_clear_staging_confirmation_is_destructive(
+        self, fake_home, interactive, monkeypatch
+    ):
         """`--yes` must not answer it.
 
         On the same command where it answers the create prompt.
         """
+        staging = self._stage(fake_home)
+        asked: list[str] = []
+
+        def decline(question, **kwargs):
+            asked.append(question)
+            return False
+
+        monkeypatch.setattr("typer.confirm", decline)
+        code = app.invoke_guarded(["config", "--clear-staging", "--yes"])
+        # Asked despite --yes, declined, and nothing deleted: exit 3.
+        assert asked == ["Delete all staging contents?"]
+        assert code == ExitCode.ABORTED
+        assert (staging / "cat" / "0001.jpg").exists()
+
+    def test_clear_staging_unattended_refuses_rather_than_deleting(
+        self, fake_home, monkeypatch
+    ):
+        monkeypatch.setattr("optica.utils.prompts.is_interactive", lambda: False)
+        staging = self._stage(fake_home)
+        code = app.invoke_guarded(["config", "--clear-staging", "--yes", "--force"])
+        assert code == ExitCode.ERROR
+        assert (staging / "cat" / "0001.jpg").exists()
+
+    def test_clear_staging_with_nothing_staged(self, fake_home, capsys):
+        assert app.invoke_guarded(["config", "--clear-staging"]) == ExitCode.SUCCESS
+        assert "already empty" in capsys.readouterr().out

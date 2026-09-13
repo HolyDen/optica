@@ -1,11 +1,8 @@
 """The ``optica config`` command.
 
-Implements plan § "Configuration" — ``--init``, ``--set``, ``--view`` and
-``--global``.
-
-``--clear-staging`` is **not** registered yet: the plan puts its deletion logic
-in the Input Manager, which pass 2 builds, and ``cli/config.py`` delegates to it
-rather than reimplementing it. The flag arrives with the Input Manager.
+Implements plan § "Configuration" — ``--init``, ``--set``, ``--view``,
+``--global`` and, from pass 2, ``--clear-staging``, whose deletion logic lives in
+the Input Manager; this module lists, asks, and delegates.
 
 Prompt dispositions here are the plan's, and they differ within the one command
 — which is why ``--yes`` is registered per prompt rather than per command
@@ -22,6 +19,7 @@ from optica.cli import get_state
 from optica.config.defaults import API_KEYS
 from optica.config.manager import ConfigManager
 from optica.exceptions import OpticaConfigError, OpticaValidationError
+from optica.input import manager as input_manager
 from optica.utils import logging as olog
 from optica.utils.lockfile import acquire_lock
 from optica.utils.prompts import PromptCategory, confirm_or_abort
@@ -41,6 +39,11 @@ def config(
     view: bool = typer.Option(
         False, "--view", help="Show the resolved config with source annotations."
     ),
+    clear_staging: bool = typer.Option(
+        False,
+        "--clear-staging",
+        help="List and clear all staging contents, with confirmation.",
+    ),
     use_global: bool = typer.Option(
         False, "--global", help="Force --set to write the global config."
     ),
@@ -53,7 +56,12 @@ def config(
     state = get_state(ctx).merge(verbose=verbose, quiet=quiet, yes=yes, force=force)
     manager = ConfigManager()
 
-    requested = (("--set", key), ("--init", init), ("--view", view))
+    requested = (
+        ("--set", key),
+        ("--init", init),
+        ("--view", view),
+        ("--clear-staging", clear_staging),
+    )
     chosen = [name for name, given in requested if given]
     if len(chosen) > 1:
         raise OpticaValidationError(
@@ -63,7 +71,7 @@ def config(
         )
     if not chosen:
         raise OpticaValidationError(
-            "optica config needs one of --set, --init or --view.",
+            "optica config needs one of --set, --init, --view or --clear-staging.",
             why="On its own it has nothing to do.",
             fix=[
                 "Run: optica config --view          to see the resolved settings",
@@ -77,6 +85,11 @@ def config(
         return
     if key is not None:
         _set(manager, key, value, use_global=use_global)
+        return
+    if clear_staging:
+        # Deletes files, so like --init it takes the lock.
+        with acquire_lock("optica config --clear-staging"):
+            _clear_staging()
         return
     # `--init` writes a file, so unlike --view and --set it takes the lock.
     with acquire_lock("optica config --init"):
@@ -157,6 +170,32 @@ def _init(manager: ConfigManager, *, assume_yes: bool) -> None:
 
     path = manager.init_project()
     olog.success(f"Created {path}")
+
+
+def _clear_staging() -> None:
+    """List staging, ask, and clear it.
+
+    Staging is hidden **and large**, which is why this command exists. The
+    confirmation is destructive: ``--yes`` never answers it and ``--force``
+    never suppresses it, so unattended it refuses rather than deleting.
+    """
+    listing = input_manager.list_staging()
+    if listing.empty:
+        olog.status("Staging is already empty.")
+        return
+    olog.out_console.print("Staging holds:")
+    for line in listing.lines:
+        olog.out_console.print(f"  {line}")
+    confirm_or_abort(
+        "Delete all staging contents?",
+        default=False,
+        category=PromptCategory.DESTRUCTIVE,
+        non_interactive_why="Clearing staging deletes fetched images and session "
+        "progress, which needs an explicit answer.",
+        non_interactive_fix="Run this in a terminal.",
+    )
+    cleared = input_manager.clear_staging()
+    olog.success(f"Staging cleared — {len(cleared.lines)} items removed.")
 
 
 def register(app: typer.Typer) -> None:

@@ -176,13 +176,30 @@ class TestExemptCommands:
 class TestPlanValuesStillToImplement:
     """Wiring the lock into the commands themselves."""
 
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_fetch_takes_the_lock(self):
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["fetch", "-c", "cat,dog", "--yes"],
+            ["config", "--clear-staging"],
+        ],
+    )
+    def test_fetch_takes_the_lock(self, argv, monkeypatch, project_dir, capsys):
         """The blocked list.
 
         run, train, fetch, export, curate, label, setup, config --init and
-        config --clear-staging.
+        config --clear-staging. Pass 2 wires the two it builds: a live lock held
+        by another run blocks both before they touch the network or staging.
         """
+        from optica.cli.main import app
+        from optica.exceptions import ExitCode
+
+        lockfile.lock_path().write_text(
+            json.dumps({"pid": 4242, "command": "optica run", "run_id": "r"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lockfile, "pid_is_live", lambda pid: True)
+        assert app.invoke_guarded(argv) == ExitCode.ERROR
+        assert "already running" in capsys.readouterr().err
 
     @pytest.mark.skip(reason="stub - pass 5")
     def test_setup_takes_the_lock(self):

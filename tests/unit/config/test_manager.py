@@ -360,13 +360,31 @@ class TestView:
 
 
 class TestPlanValuesStillToImplement:
-    @pytest.mark.skip(reason="stub - pass 2")
-    def test_clear_staging_lists_all_three_staging_shapes(self):
+    def test_clear_staging_lists_all_three_staging_shapes(self, tmp_path):
         """All three staging shapes are listed.
 
         The deletion logic lives in the Input Manager; cli/config.py delegates
-        to it.
+        to it. Built in pass 2; the fuller tests are in
+        tests/unit/input/test_manager.py::TestClearStaging.
         """
+        import json
+
+        from optica.input.manager import list_staging
+
+        staging = tmp_path / ".optica" / "staging"
+        (staging / "cat").mkdir(parents=True)
+        (staging / "labeling").mkdir()
+        (staging / "labeling" / "abc.json").write_text(
+            json.dumps(
+                {"version": 1, "source": "/imgs", "source_type": "folder", "classes": []}
+            ),
+            encoding="utf-8",
+        )
+        (staging / "curation.json").write_text('{"version": 1}', encoding="utf-8")
+        listing = list_staging(tmp_path)
+        assert [s.name for s in listing.fetched] == ["cat"]
+        assert listing.curation is not None
+        assert [entry.source for entry in listing.labeling] == ["/imgs"]
 
     @pytest.mark.skip(reason="stub - pass 5")
     def test_setup_creates_the_global_config(self):
