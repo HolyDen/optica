@@ -292,8 +292,15 @@ torch/CUDA row there is.
 
 **Consequences.**
 
-1. **The plan's ~3GB figure is high.** PyPI's Linux tree measures **2.40 GB**,
-   not ~3 GB. Same order, but the estimate should read ~2.4 GB.
+1. **The "~3GB" figure is not the plan's.** It comes from
+   `notes/passes/pass-0.md` line 63, which framed task 2 as checking a figure
+   "computed from PyPI's dependency tree". Searched 2026-09-13 across all 1781
+   lines of `spec/optica-plan-v1-core.md` for every `GB`, `MB`, `GiB`,
+   `gigabyte` and `disk` token: **the plan contains no ~3GB figure in any
+   spelling or unit.** Its `torch-gpu` estimate was `~2GB`, which this
+   measurement finds slightly *low* — the opposite direction. Corrected
+   2026-09-13 by the human between passes 1 and 2; the measurement itself
+   (2.40 GB Linux, 2.08 GB Windows) is unchanged and stands.
 2. **On Linux, the CUDA index and PyPI are the same size** — 2,287.9 vs
    2,289.0 MiB, a 1.1 MiB difference. This **confirms** plan § "Tech Stack":
    PyPI's Linux `torch` pulls the CUDA stack unconditionally. The interesting
