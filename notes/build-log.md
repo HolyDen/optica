@@ -2587,3 +2587,180 @@ removes that class's entries from `curation.json` (and so whether "the state
 file that accompanies it" includes another subsystem's file); or whether
 re-fetched numbering must not reuse names a session has recorded; or whether a
 curation resume should detect that a class's images were replaced.
+
+### The network guard now lets loopback through
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `tests/conftest.py:_no_network`
+**Changed:** requests whose host is `127.0.0.1` or `localhost` pass to the real
+transport; every other host still raises "test attempted real network access".
+**Why:** checkpoint 4's integration tests talk to Optica's own browser server on
+a real loopback socket. The guard exists to keep tests off public hosts; loopback
+is not that. Pass 2's fetch and Open Images tests (63, over `MockTransport`)
+still pass.
+**Reversible?** Yes.
+
+### Checkpoint 4 — integration tests
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `tests/integration/test_server.py`
+Five tests, the command run in a worker thread exactly as the console script
+runs it, uvicorn on a real port, an `httpx` client playing the page. Only the
+browser launch is replaced (it hands the URL to the test). Ports come from
+`.optica.toml`, chosen by binding; the idle timer is 0.1 min, so a failing test
+ends in seconds.
+1. `label`: page and three scripts served; 3 assignments visible **in the
+   session file** before Finish; Finish → exit 0, `dataset/` 5+5, session file
+   removed, the URL line and completion line printed.
+2. `label`: without the tokened link the page and API are 403; a foreign
+   `Host` is 403; the real page works.
+3. `label`: idle timeout → exit 3, `✗ … closed after 6 seconds …`, the one
+   assignment still in the session file, no `dataset/`.
+4. `label`: the configured port held by the test → served on another, and
+   "Port N is in use; the browser server is on M instead." printed.
+5. `curate`: page and script served, an image served by ID, 3 deselections and
+   the tab switch **in `curation.json`** before Confirm, Confirm → exit 0,
+   `dataset/` 10+12, `curation.json` removed.
+The stored form of a deselection is **not** asserted (option B under review).
+Skipped in CI (web extra), with the reason printed.
+
+### Checkpoint 4 — the live milestone
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `.smoke/pass3-live/`
+**Method, as answered to the human:** the installed console script,
+`.venv/Scripts/optica.exe`, as a **background process** (the Bash tool's
+`run_in_background`, so the two-minute foreground limit does not apply), with
+`HOME`/`USERPROFILE` set to a scratch home and `BROWSER='C:\Program
+Files\Git\usr\bin\true.exe'` — verified first to be the head of `webbrowser`'s
+try-order and to return True, since a failing `BROWSER` falls through to the real
+browser (`notes/verified.md`). A driver (`scratchpad/drive.py`, httpx) read the
+tokened URL from the process's own output and sent the page's requests. Nothing
+in the path depends on the test suite's browser guard.
+
+**`optica label --folder images -c cat,dog`** — `images/` holds 24 real photos
+copied from pass 2's live fetch (12 `photo_c*`, 12 `photo_d*`) and one zero-byte
+`empty.jpg`: 25 files.
+
+| Observed | Value |
+|---|---|
+| terminal, before the browser | `! 1 file could not be read before labeling and is left out…` / `…\empty.jpg: zero bytes` |
+| headline | `Labeling 24 images at http://127.0.0.1:8765/?token=…` (default port, free) |
+| no key: `GET /`, `GET /api/heartbeat` | 403, 403 |
+| foreign `Host` | 403 |
+| tokened link | 303 → `/`, cookie `HttpOnly` and `SameSite=strict` |
+| page, `shared.css`, `shared.js`, `labeling.js` | 200 ×4, title "Optica — Label" |
+| state | 24 images, `1 of 24`, radio widget, unreadable notice naming `empty.jpg` |
+| image 0 | 200 `image/jpeg`, 91,517 B |
+| session file after 3 assignments | `9418ecd74430134e.json`, 3 entries, position `photo_c04.jpg` |
+| decisions | 23 assigned (11 cat, 12 dog), 1 skipped (`photo_c12`) |
+| Finish unconfirmed | `confirm`: "1 image will not be included: 1 skipped, 0 not yet reached." |
+| Finish confirmed | `finished` |
+| terminal after | `Copying 23 images (2.2 MB) to dataset/ — originals untouched`, `+ Labeling complete — 23 images labeled across 2 classes (1 unreadable file left out)` |
+| **exit** | **0** |
+| `dataset/` | cat 11, dog 12 (11 + 12 = 23) |
+| session file | removed; `images/` still 25 files; port 8765 released |
+
+**`optica curate --yes`** — scratch home seeded from `.smoke/pass2-fetch/home/.optica/`
+(staging cat 12, dog 12 real Open Images photos, plus its label-map cache);
+`.optica.toml` sets `images_per_class = 12`.
+
+| Observed | Value |
+|---|---|
+| headline | `Curating 24 images across 2 classes at http://127.0.0.1:8765/?token=…` |
+| no key, foreign `Host`, tokened link, page + 3 assets | 403, 403, 403, 303 (both cookie flags), 200 ×4 |
+| state | tabs; cat 12/12, dog 12/12 |
+| image `0/0` | 200 `image/jpeg`, 91,517 B |
+| after 3 deselections | `curation.json` cat entries 3; cat 9 of 12; warning `cat: only 9 images selected (fewer than 10)`; Fetch More offered for 3; Confirm enabled (advisory) |
+| Fetch More (live, Open Images) | requested 3, delivered 3, no error; cat 12 of 15, warning cleared |
+| tab switch, Confirm | active 1; `finished` |
+| mass rejection | none due (12 ≥ 10, 80%) — `--yes` had nothing to answer |
+| terminal after | `+ Curation complete — 24 images selected across 2 classes` |
+| **exit** | **0** |
+| `dataset/` | cat 12 (`0004`–`0015`), dog 12; 12 distinct MD5 in cat |
+| staging | cat `0004`–`0015` (the 3 rejected deleted), dog 12; `curation.json` removed; port released |
+
+`—` printed as `�` in both logs: the known cp1255-file / UTF-8-reader mismatch
+(pass 2), not new. **Not exercised live:** Ctrl+C at the terminal (no way to send
+a console Ctrl+C to a background process here; the INTERRUPTED path is covered
+by `TestServe` and the unit tests), the timeout warnings at 30 and 5 minutes
+(covered with a fake clock and by integration test 3's 6-second timeout), the
+mass-rejection prompt in a real terminal, and a real browser rendering the pages
+— the JavaScript remains `TODO(test)`.
+
+### Pass 3 — closed
+**Date:** 2026-09-14
+**Milestone — met, live.** *`optica label` and `optica curate` both start, serve
+their page, and write back through their session files* (`pass-3.md` as
+corrected): both ran as the installed console script in the background, served
+their page and assets to an HTTP client, wrote every decision to
+`~/.optica/staging/labeling/<id>.json` and `~/.optica/staging/curation.json`
+respectively as it happened, copied into `dataset/` through a `.partial` sibling
+on Finish/Confirm, and exited 0. No manifest was written; curate has none.
+**CI:** not run by the agent. The human pushes and confirms three runners.
+Expected on CI: **1187 passed, 28 skipped** (the `.smoke/ci-venv` result).
+
+**Built:** `src/optica/server/` — `__init__.py` (docstring), `app.py`,
+`routes.py`, `labeling.py`, `curation.py`, and `static/` (`shared.css`,
+`shared.js`, `labeling.html`, `labeling.js`, `curation.html`, `curation.js`);
+`optica label` and `optica curate` end to end in `cli/classify.py`; in `input/`,
+`partial_destination`, `commit_dataset`, `staged_queries`, `fetch_more`,
+`fetch_more_refusal`, `fetch_more_shortfall`, and option B in `sessions.py`;
+`utils/prompts.choose`, `utils/logging.incomplete`; the browser guard and the
+loopback allowance in `tests/conftest.py`.
+
+**State:** `.venv` (web extra) **1249 passed, 14 skipped** — 1263 collected;
+`.smoke/ci-venv` (Core + `[test]`) **1187 passed, 28 skipped** — 1215 collected.
+Skips: 14 = 13 from pass 2 + 1 `_NO_LOGIC` (`server/__init__.py`); 28 = those 14
++ 1 `test_routes.py` module + 8 `TestServe` + 5 integration. Collections differ by
+48 = `test_routes.py`'s 49 − 1. Pass 3 added 1263 − 879 = **384** tests to the
+suite collected at pass 2's close (879). Ruff clean and mypy `strict` clean on 73
+files in both environments. `TODO(test)` markers in `src/`: **6** (2 from pass 2:
+Flickr, rare-class cost; 4 from pass 3: keypress, the three page scripts).
+
+**Commits this pass: 21** (`4a76394..HEAD`, this entry's included) — 9 `feat`,
+2 `fix`, 1 `test`, 9 `docs` (9 + 2 + 1 + 9 = 21):
+
+| # | Commit | Kind |
+|---|---|---|
+| 1 | `docs(verified)`: FastAPI 1.0, web extra, uvicorn, port binding | docs |
+| 2 | `feat(server)`: lifecycle and shared routes | feat |
+| 3 | `feat(server)`: shared styles and behaviour | feat |
+| 4 | `docs(build-log)`: checkpoint 1 | docs |
+| 5 | `docs(build-log)`: real-Click consequence; session key for ratification | docs |
+| 6 | `feat(utils)`: choice prompt, incomplete line | feat |
+| 7 | `feat(input)`: commit a finished dataset | feat |
+| 8 | `feat(server)`: labeling page | feat |
+| 9 | `feat(cli)`: `optica label` | feat |
+| 10 | `docs(build-log)`: checkpoint 2 | docs |
+| 11 | `fix(tests)`: refuse real browser launches | fix |
+| 12 | `feat(input)`: Fetch More bridge | feat |
+| 13 | `feat(server)`: curation page | feat |
+| 14 | `feat(cli)`: `optica curate` | feat |
+| 15 | `docs(build-log)`: checkpoint 3, stray browser launch | docs |
+| 16 | `docs(build-log)`: stored-deselection proposal | docs |
+| 17 | `fix(sessions)`: rename no longer reselects (option B) | fix |
+| 18 | `docs(build-log)`: option B shipped; Start-fresh open question | docs |
+| 19 | `test(server)`: label and curate over a real socket | test |
+| 20 | `docs(verified)`: webbrowser fall-through, wheel, live Fetch More | docs |
+| 21 | `docs(build-log)`: checkpoint 4 and pass 3 close | docs |
+
+**Handed forward:**
+
+| To | Item | Recorded in |
+|---|---|---|
+| **Amendment session before pass 4** | **Option B**, provisional: deselections matched by class and file name; format unchanged | "Stored deselections are matched by class and file name — option B, provisional" |
+| **Amendment session** | **Open question:** fetch's Start fresh leaves a class's deselections behind | "Open question — fetch's 'Start fresh' leaves that class's deselections behind" |
+| **Amendment session** | **Session key** (`Host` check + cookie) — kept, to ratify; not extended | "Browser session key…" (status line) |
+| **Amendment session** | Proposed plan change: CI installs the web extra, so route and integration tests run on the runners | "Route tests cannot run in CI as the plan stands" |
+| **Human** | Proposed wording for plan l.1016 (option B) — a proposal; `spec/` untouched | "Proposed plan change — how a stored deselection survives…" |
+| **Pass 4** | Truncated JPEGs: whether pre-flight sees one depends on the image (measured table); expect decode errors at training | "Truncated JPEGs: whether pre-flight sees one depends on the image" |
+| **Pass 4** | Fetch More refuses grouped blocklist classes until `input/clip.py` exists | "Fetch More, in the browser and at the F of F/C/A" |
+| **Pass 5** | `optica run` sequences label/curate: reuse `_label_body`/`_curate_body` shapes; re-read curation Start fresh (standalone keeps the images) and the web-extra entry check; the API must not call `protect_streams` | "Curation 'Start fresh' deletes `curation.json`…"; pass 2 close |
+| **Pass 5 / 6** | `choose()` exists for imbalance F/C/A and run R/C/S | "`utils/prompts.py` gains `choose()`" |
+| **Any pass with a console** | Keypress resets the timer; Ctrl+C at a live terminal; the pages in a real browser (JS `TODO(test)`) | this entry, "Not exercised live" |
+| **Human** | `.smoke/ci-venv/`, `.smoke/pass3-live/`, `.smoke/wheel/` are this pass's throwaway directories | — |
+
+**Entries logged this pass: 39** `###` entries under "## Pass 3", counted with
+`grep -c "^### "` — checkpoint 1: 12; checkpoint 2: 10; checkpoint 3: 9; after
+checkpoint 3: 4 (the stored-deselection proposal, the `BROWSER` mechanism,
+option B, the Start-fresh open question); checkpoint 4: 4 (loopback guard,
+integration tests, live milestone, this close). 12 + 10 + 9 + 4 + 4 = 39. Not
+counted: 2 edits to existing entries made at the human's request (the
+real-Click consequence, the session key's ratification status).
+
+**Pass 3 is complete.** Next: the plan-amendment session, then pass 4.
