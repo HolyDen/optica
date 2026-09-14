@@ -2520,3 +2520,70 @@ environment before `optica` is launched. **Nothing in that path depends on the
 test suite's `_no_real_browser` guard**, which is a pytest monkeypatch that
 exists only inside test processes; the live `optica` is a separate process with
 the real `webbrowser`.
+
+### Stored deselections are matched by class and file name — option B, provisional
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/input/sessions.py:CurationSession.toggle`, `is_selected`, `_file_name`
+**Decided:** by the human, after *"Proposed plan change — how a stored
+deselection survives a class-folder rename"*, above: **B, provisionally** — built,
+tested and shipped in pass 3, and to be reviewed at the plan-amendment session
+before pass 4, together with the Start-fresh question below and three other
+items. Chosen to build on because it is reversible: the file format does not
+change, so if that session prefers A, a migration is written then rather than
+this unwound.
+**What changed — reading only.** `is_selected` and `toggle` compare a stored
+entry with an image by **class and file name** (the last path component, with
+either separator). **What is written is unchanged**: deselecting still appends
+the image's full path, the JSON shape is the plan's, `"version"` stays `1`. A
+re-deselect after a rename finds the old entry by name and does not add a second;
+a reselect removes every entry with that name. Every consumer — the page, the
+adapter's selection counts, `materialize_selection`, the staging deletion after
+Confirm — already went through `is_selected`, so nothing else changed.
+**Rejected:** A (file names only, needing `version: 2` or a conversion — decided
+at the amendment session if at all) and C (rewrite `curation.json` on every
+rename Optica performs — misses a home-directory move and couples the Fetch
+Adapter to curation).
+**Tests — the rename is performed, not simulated:**
+`tests/unit/input/test_curation.py::TestDeselectionsSurviveAFolderRename` (7) —
+deselect under `cat.partial/`, `rename` to `cat/` as `fetch_class` does, reload
+view and session, the image is still deselected; plus reselect-after-rename,
+no duplicate entry, a Windows-separator stored path, class scoping, the file
+written is unchanged (full path, version 1), and **a `curation.json` in pass 2's
+exact form reads with the same result as before**.
+`tests/unit/cli/test_curate_command.py::TestResume::test_a_fetch_completing_between_sessions_keeps_the_deselections`
+(1) — the whole path: `optica curate` interrupted with `cat.partial/`, the
+rename, `optica curate --yes`, and `dataset/cat/` holds 10, not 12.
+**Fails before, passes after — shown:** before the change, 4 of the 7 adapter
+tests failed — the rename test with `assert True is False` on `is_selected` —
+and the 3 that passed are the controls that must hold either way (format
+written, pass-2 file, class scoping). The end-to-end test, run with
+`sessions.py` stashed, failed with `{'cat': 12, 'dog': 12} == {'cat': 10, 'dog':
+12}`: **the two images the user rejected were copied into `dataset/`.** With the
+change, all 8 pass.
+**State:** `.venv` 1244 passed, 14 skipped; `.smoke/ci-venv` 1187 passed, 23
+skipped (each +8 from checkpoint 3). Ruff and mypy clean in both.
+**The drafted wording for plan l.1016 stays a proposal.** `spec/` is not touched.
+
+### Open question — fetch's "Start fresh" leaves that class's deselections behind
+**Pass:** 3   **Date:** 2026-09-14   **For:** the plan-amendment session before pass 4
+**Where:** plan § *Staging shapes* ("Start fresh deletes the staging and any state file that accompanies it", l.1020) and § *Deletion, staging, and interruption*; `src/optica/cli/classify.py:_resume_or_start_fresh`; `src/optica/input/sessions.py:CurationSession`
+**Its own question, not part of the rename fix above.** Option B does not
+cover it, and neither would A.
+**The behaviour:** at `optica fetch`'s interrupted-fetch prompt, answering N
+("start fresh for these classes") deletes `<class>.partial/`. It does **not**
+touch `~/.optica/staging/curation.json`, which is curation's file, not fetch's.
+The re-fetch numbers new images from `0001.jpg` again (plan l.797: numbering
+continues from the highest index *present*, and none is). Any deselection
+recorded for that class before the start-fresh now names a **different, new
+image** with the same file name, and that image opens in curation already
+deselected. Nothing reports it.
+**Reached by:** `optica fetch -c cat,dog` interrupted → `optica curate`
+(deselect some cat images, Ctrl+C) → `optica fetch -c cat,dog` → N at the resume
+prompt → `optica curate` → R.
+**Not changed in pass 3** — left exactly as it is, by the human's instruction.
+It was also true of pass 2's full-path matching, since the re-fetched paths are
+identical to the deleted ones.
+**What the session would decide:** whether fetch's Start fresh for a class also
+removes that class's entries from `curation.json` (and so whether "the state
+file that accompanies it" includes another subsystem's file); or whether
+re-fetched numbering must not reuse names a session has recorded; or whether a
+curation resume should detect that a class's images were replaced.
