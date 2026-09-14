@@ -320,3 +320,112 @@ class TestLabelingRoutes:
         second = client.post("/api/label/finish", json={"confirmed": True}).json()
         assert second["status"] == "finished"
         assert browser.done
+
+
+# ------------------------------------------------------------------ curation
+
+
+class TestCurationRoutes:
+    """The curation page's routes over a real controller and ``curation.json``.
+
+    Covers plan § *Curation Server*: the timer resets on image select or
+    deselect, tab switch and Fetch More; reading state does not. Every toggle
+    is written before the response returns.
+    """
+
+    @pytest.fixture
+    def curation(self, fake_home: Path, clock: FakeClock) -> tuple[TestClient, object]:
+        from optica.input.curation import load_view, open_session
+        from optica.input.fetch import ClassFetchReport
+        from optica.server.curation import CurationController
+
+        for name in ("cat", "dog"):
+            folder = fake_home / ".optica" / "staging" / name
+            folder.mkdir(parents=True)
+            for i in range(1, 13):
+                (folder / f"{i:04d}.jpg").write_bytes(f"{name}{i}".encode())
+
+        def fetcher(name: str, count: int, on_image: object) -> ClassFetchReport:
+            return ClassFetchReport(name, count)
+
+        controller = CurationController(
+            load_view(), open_session(), 50, reload=load_view, fetch_more=fetcher
+        )
+        browser = BrowserSession(controller, IdleTimer(60, clock=clock), token="c" * 32)
+        browser.port = PORT
+        client = TestClient(create_app(browser), base_url=BASE)
+        response = client.get(f"/?token={browser.token}", follow_redirects=False)
+        assert response.status_code == 303
+        return client, browser
+
+    def test_the_page_is_served(self, curation):
+        client, _ = curation
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "<title>Optica — Curate</title>" in response.text
+        assert client.get("/static/curation.js").status_code == 200
+
+    def test_state_is_not_activity(self, curation, clock):
+        client, _ = curation
+        clock.now += 40 * 60
+        body = client.get("/api/curate/state").json()
+        assert body["navigation"] == "tabs"
+        assert [c["name"] for c in body["classes"]] == ["cat", "dog"]
+        assert client.get("/api/heartbeat").json()["remaining_seconds"] == 20 * 60
+
+    @pytest.mark.parametrize(
+        ("path", "payload"),
+        [
+            ("/api/curate/select", {"class": 0, "image": 0, "selected": False}),
+            ("/api/curate/select-all", {"class": 1, "selected": False}),
+            ("/api/curate/active", {"class": 1}),
+            ("/api/curate/fetch-more", {"class": 0}),
+        ],
+    )
+    def test_each_decision_is_activity(self, curation, clock, path, payload):
+        client, _ = curation
+        clock.now += 40 * 60
+        assert client.post(path, json=payload).status_code == 200
+        assert client.get("/api/heartbeat").json()["remaining_seconds"] == 3600
+
+    def test_a_toggle_is_written_before_it_returns(self, curation, fake_home):
+        import json
+
+        client, _ = curation
+        client.post(
+            "/api/curate/select", json={"class": 1, "image": 3, "selected": False}
+        )
+        stored = json.loads(
+            (fake_home / ".optica" / "staging" / "curation.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert [Path(p).name for p in stored["deselected"]["dog"]] == ["0004.jpg"]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"class": 0, "image": 0},
+            {"class": 0, "image": 0, "selected": "no"},
+            {"class": True, "image": 0, "selected": False},
+            {"class": 0, "image": 99, "selected": False},
+            {"class": 5, "image": 0, "selected": False},
+        ],
+    )
+    def test_a_malformed_toggle_is_a_400(self, curation, payload):
+        client, browser = curation
+        assert client.post("/api/curate/select", json=payload).status_code == 400
+        assert browser.controller.session.deselected == {}
+
+    def test_confirm_blocked_by_a_class_with_nothing_selected(self, curation):
+        client, browser = curation
+        client.post("/api/curate/select-all", json={"class": 0, "selected": False})
+        body = client.post("/api/curate/confirm").json()
+        assert body["status"] == "blocked"
+        assert body["hint"] == "Select at least one image in cat to confirm."
+        assert not browser.done
+
+    def test_confirm_hands_back_to_the_terminal(self, curation):
+        client, browser = curation
+        assert client.post("/api/curate/confirm").json()["status"] == "finished"
+        assert browser.done

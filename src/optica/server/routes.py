@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from optica.server.app import STATIC_DIR, BrowserSession
+from optica.server.curation import CurationController
 from optica.server.labeling import LabelingController
 
 __all__ = ["create_app"]
@@ -137,6 +138,8 @@ def create_app(session: BrowserSession) -> FastAPI:
 
     if isinstance(session.controller, LabelingController):
         _add_labeling_routes(app, session, session.controller)
+    elif isinstance(session.controller, CurationController):
+        _add_curation_routes(app, session, session.controller)
     return app
 
 
@@ -223,5 +226,79 @@ def _add_labeling_routes(
         result = controller.finish(confirmed=confirmed)
         if result["status"] == "finished":
             # The terminal takes over: it copies the labels into dataset/.
+            session.finish()
+        return result
+
+
+def _add_curation_routes(
+    app: FastAPI, session: BrowserSession, controller: CurationController
+) -> None:
+    """The curation page's routes.
+
+    The idle timer resets on image select or deselect, tab switch, and Fetch
+    More (plan § *Curation Server*); reading state does not. Every toggle is
+    written to ``curation.json`` before the response returns.
+    """
+
+    @app.get("/api/curate/state")
+    async def curate_state() -> dict[str, Any]:
+        return controller.state()
+
+    @app.post("/api/curate/select", response_model=None)
+    async def curate_select(request: Request) -> Response | dict[str, Any]:
+        body = await _body(request)
+        class_index, image_index = _index(body.get("class")), _index(body.get("image"))
+        selected = body.get("selected")
+        if class_index is None or image_index is None or not isinstance(selected, bool):
+            return _bad_request("Expected a class index, an image index and selected.")
+        try:
+            state = controller.toggle(class_index, image_index, selected=selected)
+        except ValueError as exc:
+            return _bad_request(str(exc))
+        session.activity()
+        return state
+
+    @app.post("/api/curate/select-all", response_model=None)
+    async def curate_select_all(request: Request) -> Response | dict[str, Any]:
+        body = await _body(request)
+        class_index, selected = _index(body.get("class")), body.get("selected")
+        if class_index is None or not isinstance(selected, bool):
+            return _bad_request("Expected a class index and selected.")
+        try:
+            state = controller.set_all(class_index, selected=selected)
+        except ValueError as exc:
+            return _bad_request(str(exc))
+        session.activity()
+        return state
+
+    @app.post("/api/curate/active", response_model=None)
+    async def curate_active(request: Request) -> Response | dict[str, Any]:
+        class_index = _index((await _body(request)).get("class"))
+        if class_index is None:
+            return _bad_request("Expected a class index.")
+        try:
+            state = controller.set_active(class_index)
+        except ValueError as exc:
+            return _bad_request(str(exc))
+        session.activity()
+        return state
+
+    @app.post("/api/curate/fetch-more", response_model=None)
+    async def curate_fetch_more(request: Request) -> Response | dict[str, Any]:
+        class_index = _index((await _body(request)).get("class"))
+        if class_index is None:
+            return _bad_request("Expected a class index.")
+        try:
+            state = controller.start_fetch_more(class_index)
+        except ValueError as exc:
+            return _bad_request(str(exc))
+        session.activity()
+        return state
+
+    @app.post("/api/curate/confirm")
+    async def curate_confirm() -> dict[str, Any]:
+        result = controller.confirm()
+        if result["status"] == "finished":
+            # The terminal takes over: mass-rejection check, then dataset/.
             session.finish()
         return result

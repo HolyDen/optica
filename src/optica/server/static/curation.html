@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Optica — Curate</title>
+  <link rel="stylesheet" href="/static/shared.css">
+  <style>
+    /* Curation-only layout. The shared look lives in shared.css. */
+    .class-nav {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tabs-viewport {
+      flex: 1;
+      overflow: hidden;
+      scroll-behavior: smooth;
+    }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      width: max-content;
+    }
+    .tab {
+      appearance: none;
+      border: 1px solid var(--border);
+      border-bottom-width: 3px;
+      background: var(--surface);
+      padding: 8px 14px;
+      border-radius: 8px 8px 0 0;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .tab[aria-selected="true"] {
+      border-bottom-color: var(--accent);
+      background: var(--accent-soft);
+      font-weight: 600;
+    }
+    .tab .tab-count {
+      color: var(--muted);
+      font-weight: 400;
+      margin-left: 6px;
+    }
+    .tab.warn .tab-count {
+      color: var(--danger);
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 12px;
+    }
+    .toolbar .summary {
+      flex: 1;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 10px;
+      align-content: start;
+    }
+    .tile {
+      position: relative;
+      aspect-ratio: 1;
+      padding: 0;
+      border: 3px solid var(--selected-ring);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--surface-2);
+      cursor: pointer;
+    }
+    .tile img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .tile .mark {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 14px;
+      font-weight: 700;
+      background: var(--accent);
+      color: var(--accent-text);
+    }
+    .tile.deselected {
+      border-color: transparent;
+    }
+    .tile.deselected::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: var(--deselected-veil);
+    }
+    .tile.deselected .mark {
+      background: var(--surface);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      z-index: 1;
+    }
+    .tile .broken {
+      display: grid;
+      place-items: center;
+      height: 100%;
+      color: var(--muted);
+      font-size: 0.85em;
+      padding: 8px;
+    }
+    .zoom {
+      position: fixed;
+      z-index: 30;
+      pointer-events: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 6px;
+    }
+    .zoom img {
+      display: block;
+      max-width: min(480px, 60vw);
+      max-height: min(480px, 60vh);
+    }
+    .footer-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 16px;
+      padding: 12px 14px;
+    }
+    .footer-bar .pager {
+      flex: 1;
+    }
+    .confirm-hint {
+      flex-basis: 100%;
+      color: var(--danger);
+      margin: 0;
+      text-align: right;
+    }
+    .banner ul {
+      margin: 2px 0 0;
+      padding-left: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div class="banner banner-warn timeout-banner" id="timeout-banner" role="alert" hidden>
+    <span class="banner-text"></span>
+    <button class="btn" type="button">Keep Session Active</button>
+  </div>
+
+  <header class="app-header">
+    <h1><span class="brand">Optica</span> · Curate</h1>
+    <span class="spacer"></span>
+    <button class="btn btn-quiet" id="theme" type="button">Dark mode</button>
+  </header>
+
+  <main>
+    <div id="notices"></div>
+
+    <nav class="class-nav" id="class-nav" aria-label="Classes"></nav>
+
+    <div class="banner banner-warn" id="low-selection" role="status" hidden>
+      <div class="banner-text"></div>
+      <button class="btn" id="fetch-more" type="button" hidden></button>
+    </div>
+
+    <div class="toolbar">
+      <span class="summary" id="summary" aria-live="polite"></span>
+      <button class="btn" id="select-all" type="button">Select All</button>
+      <button class="btn" id="deselect-all" type="button">Deselect All</button>
+    </div>
+
+    <div class="grid" id="grid" role="list"></div>
+
+    <section class="card footer-bar" aria-label="Confirm">
+      <div class="pager" id="pager"></div>
+      <button class="btn btn-primary" id="confirm" type="button">Confirm</button>
+      <p class="confirm-hint" id="confirm-hint" hidden></p>
+    </section>
+  </main>
+
+  <script type="module" src="/static/curation.js"></script>
+</body>
+</html>
