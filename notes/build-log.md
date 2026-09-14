@@ -2432,3 +2432,91 @@ the curation routes, `optica curate` end to end; `staged_queries`,
 checkpoint 2 = 80 − 14 (the curation routes sit inside `test_routes.py`'s
 module-level skip). Dev − CI = 48 = 49 route tests − 1. Ruff and mypy clean in
 both. `node --check` passes `curation.js`.
+
+### Proposed plan change — how a stored deselection survives a class-folder rename
+**Pass:** 3   **Date:** 2026-09-14   **Where:** plan § "Labeling & Curation" → *Staging shapes* (l.1006, l.1008–1016); `src/optica/input/sessions.py:CurationSession`; `src/optica/server/curation.py`; `src/optica/input/curation.py:_selected`
+**Supersedes the "Not fixed … Recorded for the human" disposition** of *"Deselections are keyed by path, and a completed fetch changes paths — finding"*, above.
+
+**The question asked first: does the plan specify `curation.json`'s schema, or
+the form of a stored deselection? — Yes, so this stops here and is not decided in
+the pass.** The plan gives:
+- the **schema**, as a literal JSON shape (l.1010–1014):
+  `{ "version": 1, "created": "…", "updated": "…", "deselected": { "cat": ["…IMG_0007.jpg"], "dog": [] }, "active_class": "cat" }`;
+- the **form of an entry**: "Records **deselected paths** rather than selected
+  ones" (l.1016). The example elides the prefix (`…IMG_0007.jpg`), so it fixes
+  *paths ending in a file name* and leaves open whether absolute or relative;
+- a **version rule** (l.1006): "`version` mismatch is a hard error … The field
+  exists to be checked." Changing what an entry means is exactly what that field
+  would have to record.
+
+**The defect, restated as a data-integrity bug.** Pass 2 built entries as
+absolute paths. A class's directory is renamed between `<class>.partial/` and
+`<class>/` by `fetch_class` — when an interrupted fetch completes, and for the
+duration of every top-up (Fetch More, `optica fetch -i` more). Every stored
+entry under the old directory then matches no image, and **the images the user
+deselected silently come back selected**; Confirm would copy them into
+`dataset/` and delete nothing from staging. Nothing reports it. Moving the home
+directory has the same effect.
+**Reachable today by:** `optica fetch` interrupted → `optica curate` (deselect,
+Ctrl+C) → `optica fetch` resumed to completion → `optica curate` → R.
+
+**Options.**
+
+| | Change | Rename-proof | Stored format | Existing files |
+|---|---|---|---|---|
+| **A** | Store entries **relative to the class folder** — the file name only, `"0007.jpg"`, under its class key | yes | same JSON shape; the *meaning* of each string changes | a version-1 file holds absolute paths that match nothing under the new reading — the same silent reselect, unless the version is bumped to 2 and old files are converted or refused |
+| **B** | Keep writing paths as today; **match on (class, file name)** when reading, so the directory part is ignored | yes | unchanged | read correctly as they are |
+| C | Rewrite `curation.json` whenever `fetch_class` renames a directory | only for renames Optica performs | unchanged | unaffected | 
+
+*C rejected:* it couples the Fetch Adapter to the curation session, misses a
+home-directory move, and leaves the failure silent the moment any other rename
+happens.
+
+**Why the file name alone is a safe key in both A and B:** staged images are
+named by zero-padded sequence index, unique within a class, and numbering
+continues from the highest index present (plan l.797), so a file name identifies
+one image within its class for as long as staging holds it.
+**One case neither A nor B changes, stated so it is not mistaken for fixed:**
+answering "Start fresh" at an *interrupted-fetch* prompt deletes `<class>.partial/`
+but not `curation.json`; the re-fetch reuses `0001.jpg` upward, and old
+deselections would apply to new, different images. The current absolute-path
+scheme has the same behaviour, since the paths coincide. A plan decision on
+whether fetch's Start fresh also clears that class's deselections would close it.
+
+**Proposed wording** for l.1016, if **B** (recommended for V1 — no format
+change, no version bump, files written by pass 2's code read correctly):
+> Records **deselected** paths rather than selected ones … An entry is matched to
+> a staged image by its class and file name, not by its full path: staged file
+> names are unique within a class, and a class directory is renamed between
+> `<class>.partial/` and `<class>/` during every fetch, so a full-path match would
+> silently reselect deselected images.
+
+If **A** instead: change the example to `"cat": ["0007.jpg"]`, state that
+entries are file names relative to the class directory, and either make that
+`"version": 2` with version-1 files refused under l.1006's rule, or state a
+conversion.
+
+**Not done in this pass:** no code change, and checkpoint 4's integration tests
+will **not** assert the stored form of a deselection until this is decided —
+they assert only that deselections round-trip through `curation.json` within
+one directory layout. A test that renames `<class>.partial/` to `<class>/` and
+proves the deselection survives is ready to write under whichever option is
+chosen; under the current code it would fail, which is the defect.
+
+### The live harness's `BROWSER` value — what the stdlib does with it
+**Pass:** 3   **Date:** 2026-09-14   **Where:** checkpoint 4's live runs; `src/optica/server/app.py:serve`
+Read in CPython 3.11.9's `Lib/webbrowser.py` (`.venv`): `register_standard_browsers`
+splits `BROWSER` on `os.pathsep`, registers each entry as
+`GenericBrowser(<entry>)` **at the front** of `_tryorder`, and
+`GenericBrowser.open` runs `Popen([<entry>, url])` — the whole entry is the
+executable, no arguments — returning `not p.wait()`. `webbrowser.open` walks
+`_tryorder` and **falls through to the next browser whenever one returns False**
+— a non-zero exit, or `OSError` for a command that does not exist.
+**Consequence:** a `BROWSER` value that is not an executable exiting 0 does not
+fail safe — **it opens the real default browser.** The live runs therefore use an
+executable that ignores its argument and exits 0 (Git's `usr/bin/true.exe` on
+this machine), checked with `webbrowser.get()` / a dry `open` in the same
+environment before `optica` is launched. **Nothing in that path depends on the
+test suite's `_no_real_browser` guard**, which is a pytest monkeypatch that
+exists only inside test processes; the live `optica` is a separate process with
+the real `webbrowser`.
