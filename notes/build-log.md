@@ -2260,3 +2260,175 @@ skip. Added this checkpoint: 44 `test_labeling.py`, 30
 `test_tree.py`'s parametrized mirror check for `server/labeling.py`.
 Ruff and mypy clean in both environments.
 **Not yet run:** the real page in a real browser — checkpoint 4.
+
+### Incident — a test run launched the real server and opened a browser tab on this machine
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `tests/unit/cli/test_classify.py` (two pass-2 curate tests); `tests/conftest.py`; `src/optica/server/app.py:serve`
+**What happened:** after `optica curate` was wired, the full suite was run
+(`pytest -m "not slow"`). It did not finish; the Bash tool moved it to the
+background at its 600 s limit and it was stopped by hand. Afterwards `netstat`
+showed `127.0.0.1:8765 ↔ 127.0.0.1:54350 TIME_WAIT` — a client had connected to
+the browser server. Cause: `test_classes_is_warned_and_ignored_by_curate` and
+`test_curate_reports_an_incomplete_fetch_and_proceeds` stage an image and run
+`optica curate`, which until this checkpoint ended at "not available in this
+build". With the web extra installed they reached the real `serve`, which
+called the real `webbrowser.open` — so, almost certainly, **a tab opened in the
+developer's browser** — and then waited on the 60-minute idle timer. No process
+was left running (`tasklist`: no `python.exe`); the test's staging was in a
+temporary fake home.
+**Fixed, in two parts:**
+1. `tests/conftest.py` gains an autouse `_no_real_browser` fixture: any
+   `webbrowser.open` raises `RuntimeError("test attempted to open a real
+   browser: …")`, the same shape as pass 2's `_no_network`. Raising inside
+   `serve` stops the server it started.
+2. `serve`'s `open_browser` default was `webbrowser.open` **bound at definition
+   time**, which a monkeypatch cannot reach. It is now `None`, resolved at call
+   time. Verified to bite: with the guard in place and the two tests
+   unchanged, the run finished in about 2 s with the first test failing on the
+   guard, not hanging.
+**The two pass-2 tests, changed:** both now stand in for the browser stage (a
+fake `serve` returning `INTERRUPTED`, and `load_web` stubbed). The first
+asserted exit 1 and "optica curate is not available"; it now asserts exit 130,
+the warning, and that the browser stage was reached. The second asserted only
+the incomplete-fetch warning; it now also asserts the stage was reached, which is
+what "and proceeds" means. A third, `test_curate_with_nothing_staged_is_a_precondition_error`,
+failed **only in `.smoke/ci-venv`**: without the web extra, curate reports the
+missing extra before the staging precondition. It now stubs `load_web`. That one
+would have reddened all three runners.
+**Pattern:** the build's earlier test defects asserted an ambient fact; this one
+*caused* an ambient effect — a test with a real side effect outside the
+process. The harness now refuses both network and browser.
+
+### Has `optica label` been seen to start and serve? — not yet, stated plainly
+**Pass:** 3   **Date:** 2026-09-14
+**Asked by the human** after checkpoint 2. What exists, and what it does not show:
+- `tests/unit/server/test_app.py::TestServe` starts **real uvicorn in a worker
+  thread, on a real socket**, with the browser launch injected. It proves bind,
+  start, port reporting, timeout, Ctrl+C and shutdown. It sends **no HTTP
+  request** to that server.
+- `tests/unit/server/test_routes.py` sends real requests through Starlette's
+  **in-process test client** — no socket, no uvicorn — against the real
+  controllers and session files.
+- `tests/unit/cli/test_label_command.py` runs `optica label` end to end with
+  `serve` **replaced** by a stand-in that drives the real controller.
+**Not shown by any of them:** the installed `optica` console script, as a
+separate process, serving the page over a socket to an HTTP client, and handing
+back to the terminal. **That is checkpoint 4's live run**, for both commands:
+launched as a **background process** (the Bash tool's `run_in_background`, so
+the two-minute foreground limit does not apply), with `BROWSER` set to a
+harmless command so no tab opens, the tokened URL read from its output, the
+page and API driven with HTTP requests, and the process observed to exit with
+its completion line after Finish/Confirm. Its output and exit code will be
+recorded here.
+
+### Checkpoint 3 — `optica curate`, in the order it runs
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/cli/classify.py:curate`, `_curate_body`
+(1) `--classes` warned and ignored; (2) web extra; (3) lock; (4) staging must
+hold images, an incomplete fetch reported and proceeded past; (5)
+`curation.json` resume prompt; (6) `dataset/` overwrite prompt ("…will be
+replaced with new images selected in curation:"); (7) the browser; (8) after
+Confirm, mass rejection; (9) `dataset/`. Same reasoning as `label`'s order.
+
+### Curation "Start fresh" deletes `curation.json`, not the fetched images
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/cli/classify.py:_open_curation_session`
+**Missing:** plan § *Staging shapes*: "Start fresh deletes the staging and any
+state file that accompanies it." Read literally for a standalone `optica
+curate`, that deletes the fetched images, leaving nothing to curate and the
+command failing its own precondition.
+**Assumed:** Start fresh discards the **decisions** — `curation.json` — and keeps
+the images. Every image is selected again. `--yes` picks Resume; no terminal
+without `--yes` is an `OpticaCurationError` (the subsystem of the file).
+**Why:** the sentence is about undoing a step; for `run` (pass 5) the fetch is
+an earlier step of the same run and deleting it may be right. For standalone
+curate, the fetch was a different command. Pass 5 should re-read this.
+**Reversible?** Yes.
+
+### What Confirm leaves behind
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/cli/classify.py:_materialize_selection`
+**Assumed:** the selection is written to `.<dataset>.partial/` and committed
+exactly as for labeling; then **deselected images are deleted from staging**
+(the plan: auto-fetched images "are silently deleted if rejected" — so after
+commit, not on toggle, which must stay reversible), `curation.json` is deleted,
+and **selected images stay in staging** — they are the fetch's own state, which
+`config --clear-staging` owns. Removed counts go to `--verbose` detail only.
+**Floor re-check:** only a class the selection put **at or above** 5 can be a
+"fell below after duplicate removal" error. A class the user left below 5 and
+continued past at the mass-rejection prompt is not re-reported as a dedupe
+failure — nothing was certified, and `train` refuses it later. Mutation-checked:
+removing the staging deletion fails
+`test_the_selection_is_written_and_rejected_images_leave_staging`.
+**Reversible?** Yes.
+
+### Fetch More, in the browser and at the F of F/C/A
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/curation.py:start_fetch_more`; `src/optica/cli/classify.py:_run_fetch_more`, `_mass_rejection`; `src/optica/input/curation.py:fetch_more`, `fetch_more_refusal`, `fetch_more_shortfall`; `src/optica/input/fetch.py:staged_queries`
+**Missing:** the plan names the banner, says it requests enough to restore
+`images_per_class` selected, lists Fetch More as a timer trigger and F as
+"fetch more, reopen curation". Nothing on how it runs.
+**Assumed:**
+- **Request = `images_per_class − selected`.** When that is 0 (a class that trips
+  only the percentage trigger with plenty selected), nothing is offered —
+  fetching more would lower its percentage further.
+- **Browser:** the fetch runs in a worker thread through the Curation Adapter's
+  `fetch_more`, which calls the Fetch Adapter's own `fill-to-target` with the
+  target raised. The page polls progress; the rest of the page keeps working;
+  **Confirm waits**; that class's images are not served while its directory is
+  `.partial`. A failed fetch is shown on the page and the session continues —
+  it is not a session failure. Source: the configured `default_source`.
+- **Grouped blocklist classes are refused** in this build (`staged_queries`
+  shows sub-terms): their images are CLIP-scored after fetching, which arrives
+  with `input/clip.py` in pass 4.
+- **Terminal F:** fetches the shortfall of each warned class that can fetch,
+  with progress bars, then reopens curation. **A fetch that yields nothing
+  returns to the prompt without F** — borrowed from the plan's imbalance prompt
+  (*If the fetch yields no new images … re-presents without F*), so an exhausted
+  source cannot loop. F is not offered when no warned class can request
+  anything.
+- C's confirmation defaults to N and N returns to F/C/A (plan); mutation-checked
+  by flipping the default. `--yes`: C, then Y. A: `✗ Curation incomplete —
+  aborted; staging and selections are preserved.`, exit 3.
+**Three functions added to `input/`,** genuinely required: the Curation Adapter
+"bridges the Fetch Adapter and the Curation Server", and that bridge did not
+exist.
+**Never run against a real source.** Checkpoint 4's live run may exercise it
+against Open Images; stated there either way.
+**Reversible?** Yes.
+
+### Deselections are keyed by path, and a completed fetch changes paths — finding
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/input/sessions.py:CurationSession`; `src/optica/input/fetch.py:fetch_class`
+**Found:** `curation.json` stores deselected **absolute paths**. A class curated
+while its fetch is interrupted lives at `staging/<class>.partial/0001.jpg`; when
+`optica fetch` later resumes and completes it, the directory is renamed to
+`staging/<class>/`, the stored paths match nothing, and **those images silently
+come back selected**. Also briefly true of the class being fetched into during
+Fetch More, which is why Confirm waits and toggles re-key from the reloaded view.
+**Not fixed:** the file shape is specified in `sessions.py` from pass 2 and the
+plan's example shows full paths; changing the key to `<class>/<filename>` is a
+change to a stored format. Recorded for the human.
+**Reversible?** n/a — a finding.
+
+### Curation page details the plan leaves open
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/static/curation.js`, `src/optica/server/curation.py`
+- Tabs show `selected/fetched` per class and mark a class with warnings; the
+  dropdown shows the same in each option.
+- Hover zoom: a preview beside the tile after the pointer rests 280 ms,
+  dismissed on leave; none while the pointer moves across the grid.
+- Page size: as many 150 px cells as fit the grid's width and the height left
+  above the Confirm bar; recomputed on resize.
+- A tile shows a check when selected; deselected tiles are veiled, not hidden.
+- An image that fails to draw shows "Could not display" and stays toggleable.
+- A stored `active_class` no longer staged opens the first class. The first
+  draft of `state()` raised here; a test written for it caught that.
+
+### Checkpoint 3 — state
+**Pass:** 3   **Date:** 2026-09-14
+**Built:** `server/curation.py`, `static/curation.html`, `static/curation.js`,
+the curation routes, `optica curate` end to end; `staged_queries`,
+`fetch_more`, `fetch_more_refusal`, `fetch_more_shortfall`; the browser guard in
+`tests/conftest.py`.
+**Tests:** `.venv` **1236 passed, 14 skipped** (1250 collected);
+`.smoke/ci-venv` **1179 passed, 23 skipped** (1202). Skips unchanged. New: 31
+`test_curation.py` (server) + 22 `test_curate_command.py` + 14 curation routes +
+6 `TestFetchMore` + 6 `TestStagedQueries` = 79, plus 1 mirror check for
+`server/curation.py` = **80 = 1250 − 1170**. CI-style collects 66 more than at
+checkpoint 2 = 80 − 14 (the curation routes sit inside `test_routes.py`'s
+module-level skip). Dev − CI = 48 = 49 route tests − 1. Ruff and mypy clean in
+both. `node --check` passes `curation.js`.
