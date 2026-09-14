@@ -16,6 +16,7 @@ and the CLI asks it.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -52,6 +53,7 @@ __all__ = [
     "check_clip_threshold",
     "clear_staging",
     "clip_available",
+    "commit_dataset",
     "compare_classes",
     "describe_destination",
     "destination_contents",
@@ -59,6 +61,7 @@ __all__ = [
     "list_staging",
     "missing_classes_error",
     "overwrite_refused",
+    "partial_destination",
     "replace_destination",
     "require_clip_extra",
     "require_single_input_source",
@@ -344,6 +347,30 @@ def replace_destination(destination: Path) -> None:
     elif destination.exists():
         destination.unlink()
     destination.mkdir(parents=True, exist_ok=True)
+
+
+def partial_destination(destination: Path) -> Path:
+    """The sibling a new dataset is written into before it replaces ``destination``.
+
+    ``<parent>/.<name>.partial/`` — a sibling, because a rename is atomic only
+    within one filesystem; the same convention fetch and export use.
+    """
+    return destination.parent / f".{destination.name}.partial"
+
+
+def commit_dataset(partial: Path, destination: Path) -> None:
+    """Replace ``destination`` with the finished dataset written at ``partial``.
+
+    The existing contents are removed first — "overwrite" means replace, never
+    merge — and only once the new dataset is complete and has passed its checks,
+    so a failed materialization leaves the user's old dataset exactly as it was.
+    The caller has already had the replacement confirmed.
+    """
+    if destination.is_dir() and not destination.is_symlink():
+        shutil.rmtree(destination)
+    elif destination.exists() or destination.is_symlink():
+        destination.unlink()
+    os.replace(partial, destination)
 
 
 # --------------------------------------------------- --classes vs a dataset

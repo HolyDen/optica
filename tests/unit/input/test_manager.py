@@ -216,6 +216,41 @@ class TestDestination:
         assert list(dest.iterdir()) == []
         assert tmp_path.exists()
 
+    def test_the_partial_is_a_hidden_sibling(self, tmp_path):
+        # A sibling, so the final rename stays on one filesystem.
+        dest = tmp_path / "data" / "dataset"
+        assert m.partial_destination(dest) == tmp_path / "data" / ".dataset.partial"
+
+    def test_commit_replaces_the_old_dataset_with_the_new_one(self, tmp_path):
+        dest = tmp_path / "dataset"
+        (dest / "old").mkdir(parents=True)
+        (dest / "old" / "stale.jpg").write_bytes(b"x")
+        partial = m.partial_destination(dest)
+        (partial / "cat").mkdir(parents=True)
+        (partial / "cat" / "a.jpg").write_bytes(b"new")
+        m.commit_dataset(partial, dest)
+        assert not partial.exists()
+        assert sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*")) == [
+            "cat",
+            "cat/a.jpg",
+        ]
+
+    def test_commit_into_an_absent_destination(self, tmp_path):
+        dest = tmp_path / "dataset"
+        partial = m.partial_destination(dest)
+        (partial / "dog").mkdir(parents=True)
+        m.commit_dataset(partial, dest)
+        assert (dest / "dog").is_dir()
+        assert not partial.exists()
+
+    def test_commit_replaces_a_file_standing_where_the_folder_goes(self, tmp_path):
+        dest = tmp_path / "dataset"
+        dest.write_bytes(b"not a folder")
+        partial = m.partial_destination(dest)
+        partial.mkdir()
+        m.commit_dataset(partial, dest)
+        assert dest.is_dir()
+
     def test_unattended_refusal_names_overwrite(self, tmp_path):
         error = m.overwrite_refused(tmp_path / "dataset")
         assert isinstance(error, OpticaValidationError)
