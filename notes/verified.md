@@ -1043,3 +1043,147 @@ Rich's current implementation (`rich/_win32_console.py` `write_text` →
 `file.write`), not a documented contract. `PYTHONIOENCODING=ascii:strict` is a
 reliable, documented way to make **stdout** strict ASCII on pipes on every
 platform, which is what `tests/integration/test_output_encoding.py` uses.
+
+---
+
+## Pass 3
+
+### FastAPI has not reached 1.0 — the `<1.0` ceiling stands
+
+**Date:** 2026-09-14
+**How:**
+```
+.venv/Scripts/python.exe -m pip index versions fastapi
+curl -s https://pypi.org/pypi/fastapi/json          # every release, parsed with packaging.version
+curl -s "https://api.github.com/repos/fastapi/fastapi/releases?per_page=5"
+curl -s "https://api.github.com/repos/fastapi/fastapi/tags?per_page=100"
+```
+**Result:** latest is **0.141.1**. No release on PyPI has major ≥ 1, and no
+pre-release of 1.0 exists either — the only pre-/dev releases ever published
+are `0.100.0b1`–`b3`, `0.110.3.dev1`/`dev2` and `0.111.0.dev1`.
+
+| Source | Latest | Published |
+|---|---|---|
+| PyPI `fastapi` | 0.141.1 | 2026-07-29T17:18:04 |
+| PyPI, previous three | 0.141.0 / 0.140.13 / 0.140.12 | 2026-07-29 / 07-28 / 07-28 |
+| GitHub releases, newest five | 0.141.1, 0.141.0, 0.140.13, 0.140.12, 0.140.11 | none marked pre-release |
+| GitHub tags (100 newest) | all `0.*` except the ancient `v0.1.16` | — |
+
+`fastapi` 0.141.1 metadata: `Requires-Python >=3.10`; runtime requirements
+`starlette>=0.46.0`, `pydantic>=2.9.0`, `typing-extensions>=4.8.0`,
+`typing-inspection>=0.4.2`, `annotated-doc>=0.0.2`.
+**Consequence:** closes the plan's pre-implementation-gate item *"whether
+FastAPI has reached 1.0, which changes the `<1.0` ceiling"* (plan
+§ "Version-bound strategy", § "Two gates before implementation").
+**`pyproject.toml`'s `fastapi>=0.141,<1.0` is correct and is not changed.** The
+plan's Tech Stack snapshot (0.141.1) is still the latest.
+
+### What `optica[web]` resolves to, and that it installs real Click
+
+**Date:** 2026-09-14
+**How:**
+```
+.venv/Scripts/python.exe -m pip install -e ".[test,web]"
+.venv/Scripts/python.exe -m pip index versions uvicorn
+.venv/Scripts/python.exe -m pip index versions starlette
+python -c "import importlib.metadata as md; print(md.version(p), md.requires(p))"   # per package
+python -c "import click; print(click.__file__)"
+```
+**Result:**
+
+| Package | Resolved | Latest on PyPI | Declared runtime requirements (no extras) |
+|---|---|---|---|
+| `fastapi` | 0.141.1 | 0.141.1 | `starlette>=0.46.0`, `pydantic>=2.9.0`, … |
+| `uvicorn` | 0.53.0 | 0.53.0 | **`click>=7.0`**, `h11>=0.8` |
+| `starlette` | 1.6.0 | 1.6.0 | `anyio<5,>=3.6.2` |
+| `click` | 8.5.0 | — | (pulled in by uvicorn) |
+| `h11` | 0.16.0 | — | — |
+
+`uvicorn` 0.53.0 sits inside `pyproject.toml`'s `uvicorn>=0.52,<1.0`.
+`starlette` has passed 1.0, but it is not declared by Optica — FastAPI bounds it
+from below only. All three ship `py.typed`.
+
+**`import click` now succeeds** (`.venv/Lib/site-packages/click/__init__.py`).
+**Consequence:** `CLAUDE.md` § "Settled points" ("`import click` fails in a Core
+install") is still true for **Core**, and false once `optica[web]` is
+installed. The danger it names — a second, unrelated `UsageError` class — is
+therefore present in every `label`/`curate` environment. Optica is unaffected
+only because it never imports `click`: Typer keeps raising its vendored
+`typer._click` classes, which is what `cli/main.py` catches. `grep` for
+`import click` across `src/` and `tests/` returns nothing. **Server code must
+not import `click` either**, even though it would now import cleanly.
+
+### uvicorn 0.53.0 can run in a worker thread on a socket Optica binds
+
+**Date:** 2026-09-14
+**How:** read `.venv/Lib/site-packages/uvicorn/server.py` (l.85–130, l.332–350)
+and `uvicorn/config.py` (l.214–269, l.390–427, l.568–610).
+**Result:**
+- `Server.run(sockets: list[socket.socket] | None = None)` accepts pre-bound
+  sockets, so the port Optica chose is the port served — no gap between probing
+  a port and binding it.
+- `Server.capture_signals()` installs signal handlers **only on the main
+  thread** (`if threading.current_thread() is not threading.main_thread(): yield`).
+  In a worker thread it leaves SIGINT to Python, so Ctrl+C reaches Optica's own
+  main thread.
+- `Server.started` is set at the end of `startup()`; `should_exit` is polled by
+  `main_loop()` to stop.
+- `Config(log_config=...)` defaults to uvicorn's `LOGGING_CONFIG` and applies it
+  with `logging.config.dictConfig`; `log_config=None` skips that, leaving
+  Optica's logging untouched. `access_log=False` silences per-request lines.
+- A startup failure calls `sys.exit(STARTUP_FAILURE)` — inside a worker thread
+  that ends the thread, so "thread dead and `started` False" is the failure test.
+- uvicorn's own `bind_socket` sets `SO_REUSEADDR` (l.601) — relevant below.
+
+### Binding a taken port on Windows, with and without socket options
+
+**Date:** 2026-09-14
+**How:** `.venv/Scripts/python.exe` on the build machine (win32): a listener on
+`127.0.0.1:<ephemeral>`, then a second socket binding the same address under
+each option; then the same against a `0.0.0.0` listener; then a rebind after a
+server-side close.
+**Result:**
+
+| Second socket's option | Against a `127.0.0.1` listener | Against a `0.0.0.0` listener |
+|---|---|---|
+| none | refused, `10048` (WSAEADDRINUSE) | **bound** |
+| `SO_REUSEADDR` | refused, `13` (access forbidden) | — |
+| `SO_EXCLUSIVEADDRUSE` | refused, `10048` | **bound** |
+
+Rebinding `127.0.0.1:<port>` with `SO_EXCLUSIVEADDRUSE` immediately after a
+server-side close (the connection in `TIME_WAIT`): **bound**.
+**Consequence:** a port already listening on the same address is refused on
+Windows with no option set, so "try to bind, move on if refused" implements the
+plan's auto-increment. `server/app.py` sets `SO_EXCLUSIVEADDRUSE` on Windows so no
+later process can bind over Optica's port, and `SO_REUSEADDR` on POSIX so a port
+left in `TIME_WAIT` by the previous run is reusable. **Not preventable on
+Windows by either option:** binding `127.0.0.1:<p>` while another program
+listens on `0.0.0.0:<p>` succeeds. The plan's "next free port" cannot see that
+case. POSIX behaviour is not measured here; the port test constructs a
+same-address listener, which is refused on every platform, and runs in CI.
+
+### Hatchling ships `server/static/` in the wheel with no configuration
+
+**Date:** 2026-09-14
+**How:** `.venv/Scripts/python.exe -m pip wheel . --no-deps -w .smoke/wheel`, then
+`zipfile.ZipFile(<wheel>).namelist()`.
+**Result:** `optica-0.1.1-py3-none-any.whl` contains, under `optica/server/`:
+`__init__.py`, `app.py`, `routes.py`, `static/shared.css`, `static/shared.js` —
+5 of the 5 files on disk at the time. No `spec/` or `notes/` entry.
+**Consequence:** non-Python files under `src/optica/` are package data by
+default; `pyproject.toml` needs no `include` for the pages. Re-check when the two
+HTML pages and their scripts land.
+
+### Starlette 1.6.0's `TestClient` warns that `httpx` is deprecated for it
+
+**Date:** 2026-09-14
+**How:** `pytest tests/unit/server` under `.venv` (starlette 1.6.0, httpx 0.28.1).
+**Result:** two warnings on importing `fastapi.testclient`, verbatim:
+"StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is
+deprecated; install `httpx2` instead." and "DeprecationWarning: The
+anyio.abc.BlockingPortal alias is deprecated, use
+anyio.from_thread.BlockingPortal instead." Tests pass.
+**Consequence:** none now — test-only, and warnings are not errors in this
+suite. `httpx` is Core, so moving the test client to `httpx2` would add a
+package for tests alone; not done. Recorded so the warning is recognised rather
+than chased when a later Starlette turns it into an error.
