@@ -1943,6 +1943,16 @@ a Core install" remains true for Core only. Harmless while Optica never imports
 `click` — Typer raises only its vendored classes — and the existing suite passed
 with Click present (866 passed, 13 skipped) before any pass-3 code was written.
 No `server/` module imports `click`.
+**The sharper consequence (added 2026-09-14 at the human's request):**
+`CLAUDE.md` implies that reaching for `click` is a *loud* mistake, because
+`import click` fails. With the web extra installed it is **silent**: `import
+click` succeeds, `except click.UsageError:` compiles and runs — and never fires,
+because Typer raises `typer._click.exceptions.UsageError`, an unrelated class. A
+handler written that way would pass review, pass in a Core-only environment only
+by failing to import, and in a `label`/`curate` environment let every parser
+error through as an unexpected exception. Rule unchanged and now load-bearing in
+both environments: **use Typer's equivalents** — `typer._click.exceptions`,
+`typer.testing` — never `click.*`.
 
 ### Route tests cannot run in CI as the plan stands — proposed plan change
 **Pass:** 3   **Date:** 2026-09-14   **Where:** plan § "Version-bound strategy"; `.github/workflows/ci.yml`; `tests/unit/server/`
@@ -2021,6 +2031,10 @@ list, never by path**.
 session. **Mutation-checked:** with both checks replaced by `if False:`, 3 of
 the 19 route tests failed; restored, 19 passed.
 **Reversible?** Yes — one middleware and one redirect.
+**Status (human, 2026-09-14):** kept, and **an item for the next
+plan-amendment session to ratify**. Pass 3 builds on these two guards and does
+not extend them; any further unspecified security behaviour is a stop, not an
+assumption.
 
 ### Port binding: Optica binds, uvicorn serves the bound socket
 **Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/app.py:bind_first_free`, `_bind`
