@@ -89,11 +89,19 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     ``httpx.MockTransport`` is unaffected, so tests that need HTTP build a client
     over one.
     """
+    real = httpx.HTTPTransport.handle_request
 
     def refuse(self: httpx.HTTPTransport, request: httpx.Request) -> httpx.Response:
+        # From pass 3 the integration tests talk to Optica's own browser server
+        # on the loopback address. That is not the network this guard protects.
+        if request.url.host in _LOOPBACK:
+            return real(self, request)
         raise RuntimeError(f"test attempted real network access: {request.url}")
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", refuse)
+
+
+_LOOPBACK = frozenset({"127.0.0.1", "localhost"})
 
 
 @pytest.fixture(autouse=True)
