@@ -27,6 +27,9 @@ _NO_LOGIC: frozenset[str] = frozenset(
         # Pass 2: the package docstring and nothing else. Everything the input
         # layer exposes is imported from its submodules by name.
         "input/__init__.py",
+        # Pass 3: the package docstring and nothing else. FastAPI must never be
+        # imported here — `optica.server.app` has to stay importable without it.
+        "server/__init__.py",
     }
 )
 
