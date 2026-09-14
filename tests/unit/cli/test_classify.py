@@ -200,27 +200,54 @@ class TestLock:
 class TestPlanValuesStillToImplement:
     """Flag behaviour whose implementation belongs to a later pass."""
 
-    def test_classes_is_warned_and_ignored_by_curate(self, fake_home, capsys):
+    @staticmethod
+    def _no_browser_stage(monkeypatch) -> list[object]:
+        """Stand in for the browser stage pass 3 built: it ends interrupted."""
+        from optica.server.app import Outcome
+
+        served: list[object] = []
+
+        def serve(browser: object, **kwargs: object) -> Outcome:
+            served.append(browser)
+            return Outcome.INTERRUPTED
+
+        monkeypatch.setattr("optica.cli.classify.load_web", lambda: None)
+        monkeypatch.setattr("optica.cli.classify.serve", serve)
+        return served
+
+    def test_classes_is_warned_and_ignored_by_curate(
+        self, fake_home, monkeypatch, capsys
+    ):
         """Curate reads the fetched staging structure, not a class list."""
         staged = fake_home / ".optica" / "staging" / "cat"
         staged.mkdir(parents=True)
         (staged / "0001.jpg").write_bytes(b"x")
-        # The browser stage is pass 3, so the command still ends there.
-        assert app.invoke_guarded(["curate", "-c", "dog"]) == ExitCode.ERROR
-        err = capsys.readouterr().err
-        assert "--classes is ignored by optica curate" in err
-        assert "optica curate is not available" in err
+        served = self._no_browser_stage(monkeypatch)
+        # Pass 3 built the browser stage; the stand-in ends it as interrupted.
+        assert app.invoke_guarded(["curate", "-c", "dog"]) == ExitCode.INTERRUPTED
+        assert "--classes is ignored by optica curate" in capsys.readouterr().err
+        assert len(served) == 1
 
-    def test_curate_with_nothing_staged_is_a_precondition_error(self, capsys):
+    def test_curate_with_nothing_staged_is_a_precondition_error(
+        self, monkeypatch, capsys
+    ):
+        # From pass 3 curate checks the web extra first; where it is absent (CI)
+        # that error would print instead of the precondition under test.
+        monkeypatch.setattr("optica.cli.classify.load_web", lambda: None)
         assert app.invoke_guarded(["curate"]) == ExitCode.ERROR
         assert "No fetched images are staged" in capsys.readouterr().err
 
-    def test_curate_reports_an_incomplete_fetch_and_proceeds(self, fake_home, capsys):
+    def test_curate_reports_an_incomplete_fetch_and_proceeds(
+        self, fake_home, monkeypatch, capsys
+    ):
         partial = fake_home / ".optica" / "staging" / "dog.partial"
         partial.mkdir(parents=True)
         (partial / "0001.jpg").write_bytes(b"x")
+        served = self._no_browser_stage(monkeypatch)
         app.invoke_guarded(["curate"])
         assert "did not finish" in capsys.readouterr().err
+        # "Proceeds": it reached the browser stage rather than stopping.
+        assert len(served) == 1
 
     def test_folder_with_manifest_is_a_mutually_exclusive_flag_error(self, capsys):
         """OpticaValidationError, per the plan's error-family table."""

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -33,7 +34,12 @@ from optica.cli import GlobalState, get_state, split_values
 from optica.config.defaults import MODELS, MODES, SOURCES
 from optica.config.manager import ResolvedConfig, Source
 from optica.config.schema import OpticaConfig
-from optica.exceptions import ExitCode, OpticaError, OpticaValidationError
+from optica.exceptions import (
+    ExitCode,
+    OpticaCurationError,
+    OpticaError,
+    OpticaValidationError,
+)
 from optica.input import manager as input_manager
 from optica.input.classes import (
     Overlap,
@@ -43,7 +49,17 @@ from optica.input.classes import (
     require_min_classes,
     resolve_auto_classes,
 )
-from optica.input.curation import load_view
+from optica.input.curation import (
+    CurationView,
+    fetch_more,
+    fetch_more_refusal,
+    fetch_more_shortfall,
+    load_view,
+    materialize_selection,
+    open_session,
+    selected_counts,
+    selection_warnings,
+)
 from optica.input.fetch import (
     CANDIDATE_SLACK,
     ClassFetchReport,
@@ -61,8 +77,14 @@ from optica.input.local import (
     preflight,
     require_flat_folder,
 )
-from optica.input.sessions import LabelingSession, SourceType, load_labeling
+from optica.input.sessions import (
+    CurationSession,
+    LabelingSession,
+    SourceType,
+    load_labeling,
+)
 from optica.input.validation import (
+    HARD_FLOOR,
     InPlaceReport,
     check_floor,
     check_floor_after_dedupe,
@@ -76,6 +98,7 @@ from optica.server.app import (
     load_web,
     serve,
 )
+from optica.server.curation import CurationController
 from optica.server.labeling import LabelingController
 from optica.utils import logging as olog
 from optica.utils import prompts
@@ -692,7 +715,7 @@ def _with_dataset(argv: list[str], value: str) -> str:
 
 
 def _confirm_replace(
-    state: GlobalState, destination: Path, source_flag: str, *, overwrite: bool
+    state: GlobalState, destination: Path, replaced_with: str, *, overwrite: bool
 ) -> None:
     """The ``dataset/`` overwrite prompt, at command start, before the browser opens.
 
@@ -709,9 +732,7 @@ def _confirm_replace(
         return
     if not prompts.is_interactive():
         raise input_manager.overwrite_refused(destination)
-    for line in input_manager.describe_destination(
-        destination, counts, f"labels from {source_flag}"
-    ):
+    for line in input_manager.describe_destination(destination, counts, replaced_with):
         olog.err_console.print(line)
     if prompts.confirm(
         "Continue? (n to exit)",
@@ -752,7 +773,7 @@ def _label_body(
     overwrite: bool,
 ) -> None:
     session = _open_labeling_session(state, target, names)
-    _confirm_replace(state, dataset, target.flag, overwrite=overwrite)
+    _confirm_replace(state, dataset, f"labels from {target.flag}", overwrite=overwrite)
 
     readable, unreadable = preflight(target.files)
     _report_unreadable(unreadable, "before labeling")
@@ -854,13 +875,15 @@ def curate(
 ) -> None:
     """Review fetched images in the browser and keep the good ones."""
     state = _globals(get_state(ctx), verbose=verbose, quiet=quiet, yes=yes, force=force)
-    state.config()
+    config = state.config().config
     if split_values(classes):
         # Curate reads the fetched staging structure rather than a class list.
         olog.warn(
             "--classes is ignored by optica curate.",
             why="Curation reviews the classes already fetched into staging.",
         )
+    # The whole of this command is the browser stage; see `label`.
+    load_web()
     with acquire_lock("optica curate"):
         view = load_view()
         if view.incomplete:
@@ -871,7 +894,242 @@ def curate(
                 fix="To finish it first: optica fetch --classes "
                 + ",".join(view.incomplete),
             )
-        raise _not_yet("optica curate")
+        _curate_body(state, config, view, dataset, overwrite=overwrite)
+
+
+def _open_curation_session(state: GlobalState) -> CurationSession:
+    """Resume the one curation session, or start fresh — before the browser opens.
+
+    ``--yes`` picks Resume. Start fresh deletes ``curation.json`` — the state
+    file — and keeps the fetched images, which are what there is to curate.
+    """
+    session = open_session()
+    if not session.path.exists():
+        return session
+    deselected = sum(len(paths) for paths in session.deselected.values())
+    noun = "image" if deselected == 1 else "images"
+    olog.err_console.print(
+        f"A curation session was found: {deselected} {noun} deselected "
+        f"(last saved {session.updated})."
+    )
+    choice = prompts.choose(
+        "Resume this curation session?",
+        {"R": "Resume", "S": "Start fresh"},
+        default="R",
+        assume_yes="R" if state.yes else None,
+        non_interactive_error=OpticaCurationError,
+        non_interactive_fix="Re-run with --yes to resume it.",
+    )
+    if choice == "S":
+        session.path.unlink()
+        return CurationSession(session.path)
+    return session
+
+
+def _run_fetch_more(
+    config: OpticaConfig,
+    requests: dict[str, int],
+    *,
+    progress: bool,
+    on_image: Callable[[], None] | None = None,
+) -> list[ClassFetchReport]:
+    """Fetch more for staged classes, through the Curation Adapter."""
+    client = make_client()
+    try:
+        context = SourceContext(
+            client=client, api_key=config.flickr_api_key, report=olog.status
+        )
+        source = create_source(config.default_source, context)
+        source.prepare(list(requests))
+        source.warm(
+            {name: math.ceil(n * CANDIDATE_SLACK) for name, n in requests.items()}
+        )
+        downloader = Downloader(client)
+        reports: list[ClassFetchReport] = []
+        for name, count in requests.items():
+            if not progress:
+                reports.append(
+                    fetch_more(name, count, source, downloader, on_image=on_image)
+                )
+                continue
+            with progress_bar(f"Fetching {count} more for {name}", total=count) as bar:
+                advance = partial(bar.advance, bar.task_ids[0])
+                reports.append(
+                    fetch_more(name, count, source, downloader, on_image=advance)
+                )
+        return reports
+    finally:
+        client.close()
+
+
+def _mass_rejection(
+    state: GlobalState,
+    config: OpticaConfig,
+    view: CurationView,
+    session: CurationSession,
+) -> tuple[str, CurationView]:
+    """The post-Confirm mass-rejection prompt: F / C / A.
+
+    Two independent triggers, each with its own message. **C** raises a second
+    confirmation defaulting to N; N returns to F/C/A. ``--yes`` picks C, then Y.
+    **F** fetches enough to restore ``images_per_class`` selected and reopens
+    curation; when a fetch yields nothing new the prompt returns without F, so
+    an exhausted source cannot loop.
+
+    Returns:
+        ``("C", view)`` to continue, ``("F", reloaded view)`` to reopen
+        curation, or ``("A", view)`` to abort.
+    """
+    offer_fetch = True
+    while True:
+        selected = selected_counts(view, session)
+        warnings = selection_warnings(view.fetched, selected)
+        if not warnings:
+            return "C", view
+        for warning in warnings:
+            olog.warn(warning.message)
+        requests: dict[str, int] = {}
+        for warning in warnings:
+            name = warning.class_name
+            count = fetch_more_shortfall(config.images_per_class, selected[name])
+            if count > 0 and fetch_more_refusal(name) is None:
+                requests[name] = count
+        options = {"C": "Continue anyway", "A": "Abort"}
+        if offer_fetch and requests:
+            options = {"F": "Fetch more", **options}
+        choice = prompts.choose(
+            "Some classes have few images selected.",
+            options,
+            default="C",
+            assume_yes="C" if state.yes else None,
+            non_interactive_fix="Re-run with --yes to continue with the selection.",
+        )
+        if choice == "A":
+            return "A", view
+        if choice == "C":
+            if prompts.confirm(
+                "Continue with the current selection?",
+                default=False,
+                assume_yes=state.yes,
+                non_interactive_fix="Re-run with --yes to continue.",
+            ):
+                return "C", view
+            continue
+        reports = _run_fetch_more(config, requests, progress=True)
+        delivered = sum(report.delivered for report in reports)
+        view = load_view()
+        if delivered:
+            olog.status(f"Fetched {delivered} more images; reopening curation.")
+            return "F", view
+        olog.warn("The source had no more images for those classes.")
+        offer_fetch = False
+
+
+def _curate_body(
+    state: GlobalState,
+    config: OpticaConfig,
+    view: CurationView,
+    dataset: Path,
+    *,
+    overwrite: bool,
+) -> None:
+    session = _open_curation_session(state)
+    _confirm_replace(
+        state, dataset, "images selected in curation", overwrite=overwrite
+    )
+
+    def browser_fetch(
+        name: str, count: int, on_image: Callable[[], None]
+    ) -> ClassFetchReport:
+        [report] = _run_fetch_more(
+            config, {name: count}, progress=False, on_image=on_image
+        )
+        return report
+
+    while True:
+        controller = CurationController(
+            view,
+            session,
+            config.images_per_class,
+            reload=load_view,
+            fetch_more=browser_fetch,
+        )
+        browser = BrowserSession(controller, IdleTimer(config.curation_timeout_minutes))
+        total = sum(view.fetched.values())
+        outcome = serve(
+            browser,
+            configured_port=config.curation_port,
+            headline=f"Curating {total} images across {len(view.images)} classes",
+        )
+        if outcome is Outcome.TIMED_OUT:
+            olog.incomplete(
+                "Curation incomplete — the session closed after "
+                f"{format_duration(browser.timer.timeout_seconds)} without activity; "
+                "selections are saved. Run optica curate to resume."
+            )
+            raise typer.Exit(code=ExitCode.ABORTED)
+        if outcome is Outcome.INTERRUPTED:
+            olog.incomplete(
+                "Curation incomplete — interrupted; selections are saved. "
+                "Run optica curate to resume."
+            )
+            raise typer.Exit(code=ExitCode.INTERRUPTED)
+        choice, view = _mass_rejection(state, config, controller.view, session)
+        if choice == "F":
+            continue
+        if choice == "A":
+            olog.incomplete(
+                "Curation incomplete — aborted; staging and selections are preserved."
+            )
+            raise typer.Exit(code=ExitCode.ABORTED)
+        break
+    _materialize_selection(view, session, dataset)
+
+
+def _materialize_selection(
+    view: CurationView, session: CurationSession, dataset: Path
+) -> None:
+    """Write the selection into ``dataset/<class>/``, replacing what was there.
+
+    Into a hidden sibling first, as for labeling. Then rejected auto-fetched
+    images are deleted from staging — silently, per the deletion rule — and
+    ``curation.json`` with them, the session being complete.
+    """
+    selected = selected_counts(view, session)
+    partial_dir = input_manager.partial_destination(dataset)
+    if partial_dir.exists():
+        shutil.rmtree(partial_dir)
+    report = materialize_selection(view, session, partial_dir)
+    try:
+        # Only a class the selection put at or above the floor can *fall* below
+        # it here; one already below it is the mass-rejection prompt's business,
+        # answered with C, and training refuses it later.
+        certified = {name: n for name, n in selected.items() if n >= HARD_FLOOR}
+        after = {name: report.written.get(name, 0) for name in certified}
+        check_floor_after_dedupe(certified, after)
+    except BaseException:
+        shutil.rmtree(partial_dir, ignore_errors=True)
+        raise
+    input_manager.commit_dataset(partial_dir, dataset)
+
+    rejected = 0
+    for name, paths in view.images.items():
+        for path in paths:
+            if not session.is_selected(name, str(path)):
+                path.unlink(missing_ok=True)
+                rejected += 1
+    session.path.unlink(missing_ok=True)
+
+    duplicates = sum(report.duplicates.values())
+    if duplicates:
+        noun = "image" if duplicates == 1 else "images"
+        olog.status(f"  {duplicates} duplicate {noun} removed.")
+    olog.detail(f"  {rejected} deselected images removed from staging.")
+    written = sum(report.written.values())
+    olog.success(
+        f"Curation complete — {written} images selected across "
+        f"{len(view.images)} classes"
+    )
 
 
 # --- train, export, run ---------------------------------------------------------
