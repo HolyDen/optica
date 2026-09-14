@@ -1907,3 +1907,177 @@ The warning in that row stands unchanged — never write to a manifest; its
 content hash is part of the session ID.
 
 **Pass 2 is complete.** Next: pass 3 — `server/`.
+
+---
+
+## Pass 3
+
+**Read at start:** `CLAUDE.md`; `notes/passes/pass-3.md` as corrected on
+2026-09-13 (pages write back through their **session files**, never a manifest);
+the plan's § "Labeling & Curation" in full, plus § "Input & Acquisition"
+(`--manifest`, class-count validation, pre-flight, the `dataset/` conflict),
+"Global flags", "Error handling and prompt conventions", "Class-name rules",
+"Tech Stack", "Version-bound strategy", "Code Structure", "Exceptions",
+"Implementation Notes" and the flag reference; `notes/verified.md` in full; this
+file from "## Pass 2" onward; and the code pass 3 calls — `input/sessions.py`,
+`input/curation.py`, `input/local.py`, `input/manager.py`,
+`input/validation.py`, `cli/classify.py`, `cli/main.py`, `cli/__init__.py`,
+`utils/prompts.py`, `utils/logging.py`, `exceptions.py`, `tests/conftest.py`,
+`tests/unit/test_tree.py`.
+
+Runs in four checkpoints set by the human: (1) the app, its routes, shared JS
+and CSS; (2) the label page; (3) the curate page; (4) integration tests and the
+live milestone. Each ends committed.
+
+### FastAPI 1.0 — gate item closed, bound unchanged
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `pyproject.toml`
+Verified before any `server/` code: FastAPI's latest is 0.141.1 on PyPI and on
+GitHub, and no 1.x release or 1.0 pre-release exists (`notes/verified.md`
+§ "FastAPI has not reached 1.0"). `fastapi>=0.141,<1.0` stands; nothing changed.
+
+### `optica[web]` installs real Click — finding
+**Pass:** 3   **Date:** 2026-09-14   **Where:** every `label`/`curate` environment
+uvicorn 0.53.0 declares `click>=7.0`, so `import click` succeeds once the web
+extra is installed (`notes/verified.md`). `CLAUDE.md`'s "`import click` fails in
+a Core install" remains true for Core only. Harmless while Optica never imports
+`click` — Typer raises only its vendored classes — and the existing suite passed
+with Click present (866 passed, 13 skipped) before any pass-3 code was written.
+No `server/` module imports `click`.
+
+### Route tests cannot run in CI as the plan stands — proposed plan change
+**Pass:** 3   **Date:** 2026-09-14   **Where:** plan § "Version-bound strategy"; `.github/workflows/ci.yml`; `tests/unit/server/`
+**Found:** the plan says no CI leg installs FastAPI or uvicorn, calling it "a
+cost choice rather than a constraint, deliberately not made here: installing a
+package the suite does not exercise verifies that its range resolves, not that
+its API works." From pass 3 the suite **does** exercise them, so every test
+needing FastAPI skips on all three runners.
+**Not changed:** `ci.yml` still installs `.[test]`. Changing what CI installs
+would reverse a decision the plan records as deliberate.
+**Built to narrow the gap:** everything in `server/` that is logic rather than
+wiring lives in modules that do not import FastAPI — `app.py` now (port rule,
+warning schedule, idle timer, session state, lazy import), and the page
+controllers at checkpoints 2 and 3 — so it runs in CI. What skips there: the
+whole of `test_routes.py`, and the 8 `TestServe` tests in `test_app.py` that
+start a real uvicorn.
+**Measured**, in `.smoke/ci-venv` (Core + `[test]`; FastAPI, uvicorn and Click
+all absent): ruff clean, mypy clean on 66 files, **1027 passed, 23 skipped** —
+13 as at pass 2's close + 1 `_NO_LOGIC` (`server/__init__.py`) + 1
+`test_routes.py` module + 8 `TestServe` = 23. In `.venv` (web installed):
+**1054 passed, 14 skipped** — 13 + 1 `_NO_LOGIC`. The collections differ by 18
+because a module-level skip counts once for its 19 tests (1068 − 1050 = 19 − 1).
+**Proposed wording:** in § "Version-bound strategy", replace the sentence that
+begins "Adding `FastAPI` and `uvicorn` is a cost choice" with: "`FastAPI` and
+`uvicorn` are installed on CI legs, because the browser server's routes are
+exercised by the suite; `open-clip-torch` remains excluded for the torch reason
+above."
+**Reversible?** Yes — one `pip install` argument in `ci.yml`, once decided.
+
+### mypy overrides for modules that may not be installed
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `pyproject.toml` `[tool.mypy]`
+**Missing:** CI's bare `mypy` checks `src` and `tests` where FastAPI does not
+exist (entry above), so `import fastapi` would fail the step.
+**Assumed:** `ignore_missing_imports` for `fastapi`, `starlette` and `uvicorn`
+only; and for `optica.server.routes` and the two test modules that use FastAPI,
+`disallow_untyped_decorators = false` and `warn_return_any = false` — the two
+strict checks that fire when those imports resolve to `Any`. With the extra
+installed all three ship `py.typed` and are checked for real. Verified both
+ways: clean in `.venv` and in `.smoke/ci-venv`.
+**Reversible?** Yes — delete both blocks once CI installs the extra.
+
+### `server/__init__.py` added to `_NO_LOGIC`
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `tests/unit/test_tree.py`
+A docstring and `from __future__ import annotations`. It must stay so: importing
+FastAPI there would make `optica.server.app` unimportable in Core. Third entry,
+same shape as the other two.
+
+### Two modules added to the plan's `server/` tree
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/`
+**Missing:** plan § "Code Structure" lists `app.py`, `routes.py` and `static/`.
+**Assumed:** `app.py` holds the lifecycle and every part of it that is logic,
+and imports without FastAPI; `routes.py` is the only FastAPI importer. What each
+page *decides* — navigation, Finish gating, the widget and tab thresholds,
+selection state — goes in `server/labeling.py` and `server/curation.py`, built
+with their pages.
+**Why:** the CI entry above: inside `routes.py` that logic would be untested on
+every runner; inside `input/` it would put browser concerns into the adapter
+layer the plan keeps free of UI. The same "placed when built" move as
+`utils/prompts.py` (pass 1) and `input/classes.py` (pass 2).
+**Reversible?** Yes — moves.
+
+### Browser session key: a `Host` check and a session cookie
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/routes.py:create_app`, `app.py:BrowserSession`
+**Missing:** the plan says localhost only — bound to 127.0.0.1 — and nothing
+about requests from the user's **own browser**. Any page open there can send
+requests to 127.0.0.1:8765, and a DNS-rebinding page can read the answers. The
+label page's Finish writes `dataset/`.
+**Assumed:** (1) a request whose `Host` is not `127.0.0.1:<port>` or
+`localhost:<port>` is refused, which stops rebinding; (2) the terminal prints
+`http://127.0.0.1:<port>/?token=<random>`, and opening it sets an `HttpOnly`,
+`SameSite=Strict` cookie named per port, then redirects to `/`; the page and
+every `/api/` request need the cookie. Static JS and CSS need nothing — they
+hold no session data. Images are served **by ID from the page controller's own
+list, never by path**.
+**Why:** cheap; without it "localhost only" does not describe who can drive the
+session. **Mutation-checked:** with both checks replaced by `if False:`, 3 of
+the 19 route tests failed; restored, 19 passed.
+**Reversible?** Yes — one middleware and one redirect.
+
+### Port binding: Optica binds, uvicorn serves the bound socket
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/app.py:bind_first_free`, `_bind`
+**Missing:** how "next free port" is determined.
+**Assumed:** bind each candidate on 127.0.0.1 and hand the bound socket to
+`uvicorn.Server.run(sockets=[…])`, so nothing can take the port between check
+and serve. `SO_EXCLUSIVEADDRUSE` on Windows, `SO_REUSEADDR` on POSIX, per
+`notes/verified.md` § "Binding a taken port on Windows". The error names the
+range (`8765-8784`) and stops at 65535.
+**Known limit, measured:** on Windows, a program listening on `0.0.0.0:<p>`
+does not stop Optica binding `127.0.0.1:<p>`; "free" cannot see that case.
+**Reversible?** Yes.
+
+### Where the port report and a browser launch failure go
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/app.py:serve`
+**Missing:** the plan says the resolved port "is reported in the terminal
+whenever it differs", and that browser launch failure is
+`OpticaBrowserServerError`; not at what output level, nor the error's fix.
+**Assumed:**
+- The port report is a **warning** (stderr, shown under `--quiet`): the user set
+  a port and did not get it.
+- The URL line and "progress is saved as you go" are **status**, hidden by
+  `--quiet`.
+- `webbrowser.open` returning False raises `OpticaBrowserServerError` and stops
+  the server; the fix names the `BROWSER` environment variable, which Python's
+  `webbrowser` honours. *Rejected: keeping the server up for the user to open
+  the URL by hand* — the plan names launch failure as an error.
+**Reversible?** Yes.
+
+### Idle-timer details the plan leaves open
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/app.py:IdleTimer`; the heartbeat in `routes.py`
+**Assumed:**
+- **The page's heartbeat is not activity.** The page polls every 5 s to show the
+  warning; if polling counted, an open tab would never time out.
+- **After a stall** (a sleeping laptop) the terminal prints only the newest due
+  warning, not each one missed.
+- The browser banner shows whenever a warning is due in the current idle period
+  and counts down; "Keep Session Active" posts `/api/keepalive`.
+- The terminal-keypress trigger reads keys without Enter — `msvcrt` on Windows,
+  cbreak `termios` on POSIX — and only when stdin is a real terminal.
+  `TODO(test)`: no runner has a console.
+**Reversible?** Yes.
+
+### A request that fails ends the session
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/routes.py` middleware; `app.py:serve`
+**Missing:** what happens when a handler raises — a session file that cannot be
+written, say.
+**Assumed:** the page gets a 500 and the "session ended" card; the terminal
+re-raises the first error once the server has stopped — as itself if it is an
+`OpticaError`, otherwise wrapped in `OpticaBrowserServerError` naming it.
+**Why:** plan § "Coding Style": never continue silently past an error. A page
+that carried on after a failed save would show decisions never recorded. The
+error is caught before uvicorn's own logging, so no raw traceback prints.
+**Reversible?** Yes.
+
+### The shared JavaScript has no automated tests
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/static/shared.js`
+No build step and no Node in CI, so no JS test runner. `pageItems()` (smart
+ellipsis), the heartbeat banner and the theme toggle carry `TODO(test)`, and are
+checked by driving a real browser at checkpoint 4.
