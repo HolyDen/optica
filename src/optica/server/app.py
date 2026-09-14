@@ -461,7 +461,7 @@ def serve(
     *,
     configured_port: int,
     headline: str,
-    open_browser: Callable[[str], bool] = webbrowser.open,
+    open_browser: Callable[[str], bool] | None = None,
 ) -> Outcome:
     """Run the browser server until the page finishes, times out or is interrupted.
 
@@ -474,6 +474,7 @@ def serve(
         headline: What the terminal says is happening, e.g. ``Labeling 200
             images``.
         open_browser: Opens a URL, returning whether a browser was launched.
+            Defaults to :func:`webbrowser.open`.
 
     Returns:
         How the session ended.
@@ -522,7 +523,10 @@ def serve(
             )
         else:
             olog.status("  Progress is saved as you go. Ctrl+C stops the session.")
-        if not open_browser(url):
+        # Looked up at call time, not bound as a default, so the test harness's
+        # guard against launching a real browser reaches it.
+        launch = open_browser or webbrowser.open
+        if not launch(url):
             raise OpticaBrowserServerError(
                 "Could not open a web browser.",
                 why="No browser could be launched from this environment.",

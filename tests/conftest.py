@@ -94,3 +94,21 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RuntimeError(f"test attempted real network access: {request.url}")
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", refuse)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any attempt to launch a real web browser fail the test at once.
+
+    From pass 3, ``optica label`` and ``optica curate`` start a server and open
+    the user's browser. A test that reached that path without a stand-in opened
+    a tab on the developer's desktop and then waited on a 60-minute idle timer —
+    it happened, once, while pass 3 was being built. Raising here also ends the
+    server the test started, since ``serve`` stops it on any exception.
+    """
+    import webbrowser
+
+    def refuse(url: str, *args: object, **kwargs: object) -> bool:
+        raise RuntimeError(f"test attempted to open a real browser: {url}")
+
+    monkeypatch.setattr(webbrowser, "open", refuse)
