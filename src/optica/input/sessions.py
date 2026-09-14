@@ -378,16 +378,41 @@ class CurationSession:
         atomic_write_json(self.path, self.to_json())
 
     def toggle(self, class_name: str, image: str, *, selected: bool) -> None:
-        """Record one image's selection state."""
+        """Record one image's selection state.
+
+        Deselecting writes the image's path as given — the stored form is
+        unchanged. Matching, both here and in :meth:`is_selected`, is by class
+        and **file name**; see :func:`_file_name`.
+        """
         current = self.deselected.setdefault(class_name, [])
-        if selected and image in current:
-            current.remove(image)
-        elif not selected and image not in current:
+        name = _file_name(image)
+        matching = [entry for entry in current if _file_name(entry) == name]
+        if selected:
+            for entry in matching:
+                current.remove(entry)
+        elif not matching:
             current.append(image)
 
     def is_selected(self, class_name: str, image: str) -> bool:
         """Selected is the default; only deselections are stored."""
-        return image not in self.deselected.get(class_name, [])
+        name = _file_name(image)
+        return all(
+            _file_name(entry) != name for entry in self.deselected.get(class_name, [])
+        )
+
+
+def _file_name(path: str) -> str:
+    """The last component of a stored path, whichever separator it was written with.
+
+    A deselection is matched by class and file name, not by full path.
+    ``fetch_class`` renames a class directory between ``<class>.partial/`` and
+    ``<class>/`` whenever a fetch completes or tops up, so a full-path match
+    would silently reselect every image deselected before the rename. Staged
+    file names are sequence-numbered and unique within a class, which is what
+    makes the name a sufficient key. Provisional — ``notes/build-log.md``,
+    "Stored deselections are matched by class and file name".
+    """
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
 
 
 def load_curation(path: Path) -> CurationSession:

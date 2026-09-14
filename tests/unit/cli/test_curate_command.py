@@ -152,6 +152,7 @@ class TestConfirm:
         cats = _stage(fake_home, "cat", 12)
         _stage(fake_home, "dog", 12)
         cats[1].write_bytes(cats[0].read_bytes())
+
         # Selected: 0001-0005, two of them byte-identical → 4 unique.
         def keep_first_five(controller: CurationController) -> None:
             for image in range(5, 12):
@@ -370,6 +371,30 @@ class TestResume:
         app.invoke_guarded(["curate"])
         assert fake.controllers[0].selected() == {"cat": 12, "dog": 12}
         assert len(list((_staging(fake_home) / "dog").glob("*.jpg"))) == 12
+
+    def test_a_fetch_completing_between_sessions_keeps_the_deselections(
+        self, monkeypatch, fake_home, project_dir
+    ):
+        # Curate while cat's fetch is interrupted, deselect two, stop.
+        staging = _staging(fake_home)
+        _stage(fake_home, "cat", 12)
+        _stage(fake_home, "dog", 12)
+        (staging / "cat").rename(staging / "cat.partial")
+        _serve(monkeypatch, _deselect("cat", 2), outcome=Outcome.INTERRUPTED)
+        app.invoke_guarded(["curate"])
+        deselected = [(staging / "cat.partial" / f"000{i}.jpg") for i in (1, 2)]
+
+        # The fetch completes: the rename fetch_class performs.
+        (staging / "cat.partial").rename(staging / "cat")
+
+        # Resume and confirm. The two stay out of dataset/ and leave staging.
+        _serve(monkeypatch, None)
+        assert app.invoke_guarded(["curate", "--yes"]) == ExitCode.SUCCESS
+        assert _counts(project_dir / "dataset") == {"cat": 10, "dog": 12}
+        written = {p.name for p in (project_dir / "dataset" / "cat").iterdir()}
+        assert not written & {p.name for p in deselected}
+        assert not (staging / "cat" / "0001.jpg").exists()
+        assert (staging / "cat" / "0003.jpg").exists()
 
     def test_a_corrupt_curation_json_is_a_hard_error(
         self, monkeypatch, fake_home, capsys

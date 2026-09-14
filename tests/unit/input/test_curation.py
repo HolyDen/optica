@@ -191,3 +191,120 @@ class TestFetchMore:
         ]
         # Candidates the first fetch tried are not downloaded again.
         assert len(downloader.calls) == len(set(downloader.calls)) == 7
+
+
+class TestDeselectionsSurviveAFolderRename:
+    """A class directory renamed under a curation session keeps its deselections.
+
+    ``fetch_class`` renames ``<class>.partial/`` to ``<class>/`` when a fetch
+    completes. ``curation.json`` stores full paths, so matching on the full path
+    would silently reselect every image the user deselected before the rename.
+    Entries are matched by class and file name instead (``notes/build-log.md``,
+    option B — provisional, pending the amendment session); what is written is
+    unchanged.
+    """
+
+    def test_an_interrupted_fetch_completing_does_not_reselect(self, fake_home):
+        _stage(fake_home, "cat", 12, partial=True)
+        _stage(fake_home, "dog", 12)
+        view = cur.load_view()
+        assert view.incomplete == ["cat"]
+        session = cur.open_session()
+        deselected = view.images["cat"][2]
+        assert deselected.parent.name == "cat.partial"
+        session.toggle("cat", str(deselected), selected=False)
+        session.save()
+
+        # The rename fetch_class performs when the interrupted fetch completes.
+        staging = fake_home / ".optica" / "staging"
+        (staging / "cat.partial").rename(staging / "cat")
+
+        view = cur.load_view()
+        resumed = cur.open_session()
+        moved = view.images["cat"][2]
+        assert moved.parent.name == "cat"
+        assert moved.name == deselected.name
+        assert resumed.is_selected("cat", str(moved)) is False
+        assert cur.selected_counts(view, resumed) == {"cat": 11, "dog": 12}
+
+    def test_the_file_written_is_unchanged_full_paths(self, fake_home):
+        paths = _stage(fake_home, "cat", 3)
+        session = cur.open_session()
+        session.toggle("cat", str(paths[0]), selected=False)
+        session.save()
+        stored = (fake_home / ".optica" / "staging" / "curation.json").read_text(
+            encoding="utf-8"
+        )
+        import json
+
+        data = json.loads(stored)
+        assert data["version"] == 1
+        assert data["deselected"] == {"cat": [str(paths[0])]}
+
+    def test_reselecting_after_the_rename_clears_the_old_entry(self, fake_home):
+        _stage(fake_home, "cat", 3, partial=True)
+        view = cur.load_view()
+        session = cur.open_session()
+        session.toggle("cat", str(view.images["cat"][0]), selected=False)
+        session.save()
+        staging = fake_home / ".optica" / "staging"
+        (staging / "cat.partial").rename(staging / "cat")
+        view = cur.load_view()
+        session = cur.open_session()
+        session.toggle("cat", str(view.images["cat"][0]), selected=True)
+        assert session.deselected == {"cat": []}
+        assert cur.selected_counts(view, session) == {"cat": 3}
+
+    def test_deselecting_after_the_rename_does_not_duplicate_the_entry(self, fake_home):
+        _stage(fake_home, "cat", 3, partial=True)
+        view = cur.load_view()
+        session = cur.open_session()
+        session.toggle("cat", str(view.images["cat"][1]), selected=False)
+        staging = fake_home / ".optica" / "staging"
+        (staging / "cat.partial").rename(staging / "cat")
+        view = cur.load_view()
+        session.toggle("cat", str(view.images["cat"][1]), selected=False)
+        assert len(session.deselected["cat"]) == 1
+
+    def test_a_file_written_by_the_pass_2_code_reads_as_it_did(self, fake_home):
+        # Existing curation.json files — absolute paths, one layout — are read
+        # correctly with no conversion and no version change.
+        import json
+
+        cats = _stage(fake_home, "cat", 4)
+        (fake_home / ".optica" / "staging" / "curation.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "created": "2026-09-13T10:00:00+00:00",
+                    "updated": "2026-09-13T10:05:00+00:00",
+                    "deselected": {"cat": [str(cats[1]), str(cats[3])]},
+                    "active_class": "cat",
+                }
+            ),
+            encoding="utf-8",
+        )
+        view = cur.load_view()
+        session = cur.open_session()
+        assert cur.selected_counts(view, session) == {"cat": 2}
+        assert [session.is_selected("cat", str(p)) for p in cats] == [
+            True,
+            False,
+            True,
+            False,
+        ]
+
+    def test_a_windows_style_stored_path_matches_by_file_name(self, fake_home):
+        cats = _stage(fake_home, "cat", 2)
+        session = cur.open_session()
+        stored = r"C:\Users\someone\.optica\staging\cat\0002.jpg"
+        session.deselected = {"cat": [stored]}
+        assert session.is_selected("cat", str(cats[1])) is False
+        assert session.is_selected("cat", str(cats[0])) is True
+
+    def test_the_class_still_scopes_the_match(self, fake_home):
+        cats = _stage(fake_home, "cat", 2)
+        dogs = _stage(fake_home, "dog", 2)
+        session = cur.open_session()
+        session.toggle("cat", str(cats[0]), selected=False)
+        assert session.is_selected("dog", str(dogs[0])) is True
