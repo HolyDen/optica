@@ -2095,3 +2095,168 @@ error is caught before uvicorn's own logging, so no raw traceback prints.
 No build step and no Node in CI, so no JS test runner. `pageItems()` (smart
 ellipsis), the heartbeat banner and the theme toggle carry `TODO(test)`, and are
 checked by driving a real browser at checkpoint 4.
+
+### Checkpoint 2 — `optica label`, in the order it runs
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/cli/classify.py:label`, `_label_body`
+**Missing:** the plan fixes several "before" constraints and no total order.
+**Assumed:** (1) a folder or manifest is given, else a precondition error; (2)
+**the web extra** is imported; (3) the input's shape — flat folder, or a manifest
+that is not fully labeled; (4) `-c`, prompting where a prompt can fire; (5) the
+lock; (6) the session file — resume prompt; (7) the `dataset/` overwrite prompt;
+(8) pre-flight, unreadable files listed individually; (9) the browser; (10) after
+Finish, copy into `dataset/`.
+**Why this order:** everything that can refuse the run does so before anything
+asks for attention, and every prompt fires before the browser (plan: conflict
+prompts fire before any action). (6) precedes pre-flight because the plan says
+the `-c` mismatch "is detected before any image is read".
+**The web-extra check at (2)** is not the entry-point guard the plan reserves for
+`run` and declines for single-step commands. `optica label`'s only stage *is* the
+browser, so its body is the point of use; importing there means a user without
+the extra is told so before answering a class prompt, a resume prompt and an
+overwrite prompt that could never lead anywhere.
+**Reversible?** Yes.
+
+### The `dataset/` overwrite prompt deletes nothing until the new dataset is complete
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/cli/classify.py:_confirm_replace`, `_materialize_labels`; `src/optica/input/manager.py:partial_destination`, `commit_dataset`
+**Missing:** the plan says the prompt fires at command start and that
+"overwrite" means the existing contents are removed before writing. It does not
+say when, relative to an hour of labeling that may never finish.
+**Assumed:** the answer is taken at command start (the plan's rule); the
+**removal happens at commit**. Labeled images are copied into a hidden sibling,
+`<parent>/.<name>.partial/`; the floor checks run on it; only then is the old
+dataset removed and the sibling renamed into place. Interrupted, timed out, or
+failing the floor re-check, the old dataset is untouched and the partial is
+removed.
+**Why:** consent to *replace* a dataset is not consent to be left with *no*
+dataset when labeling does not finish. Still replace, never merge: nothing old
+survives a commit. Tests: `TestOverwritePrompt::test_nothing_is_deleted_when_labeling_does_not_finish`,
+`TestFloorAfterCopy`.
+**Also:** `--yes` and `--force` never answer it, `--overwrite` does, default N
+(mutation-checked: switching the prompt's category to CHOICE with `assume_yes`
+fails `test_yes_does_not_answer_it`). The abort message adapts the plan's
+`run` example to `label`: "To train on your existing dataset: optica train
+--dataset <path>", and the corrected command with `--dataset ./new-dataset`
+substituted and every other flag kept.
+**Two functions added to `input/manager.py`**, beside `replace_destination`,
+which cannot serve: it recreates the directory, and on Windows `os.replace`
+cannot rename onto an existing directory. Genuinely required by the page, per
+`pass-3.md`'s out-of-scope rule.
+**Reversible?** Yes.
+
+### Unreadable at copy is counted before duplicates, so the floor error says why
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/cli/classify.py:_materialize_labels`
+**Found while building:** `copy_into_dataset` drops two kinds of file —
+duplicates and files that fail the full decode (a truncated JPEG that passed the
+header-only pre-flight). `check_floor_after_dedupe` calls every drop a
+duplicate, so a class emptied by truncated files would read "N duplicates
+removed" when there were none.
+**Assumed:** files unreadable at copy are listed individually, subtracted from
+their class first and checked with `check_floor` ("cat has fewer than 5
+images"); only then does the post-dedupe re-check run on what remains. Both
+errors keep the session file, and the dedupe one says the session can be resumed.
+**Reversible?** Yes.
+
+### Truncated JPEGs: whether pre-flight sees one depends on the image — refines a pass-2 finding
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/input/validation.py:inspect_in_place`
+**Measured** (Pillow 12.3.0, each JPEG cut to half its bytes):
+
+| Image | Full | Half | Pre-flight (`verify`) | Full decode |
+|---|---|---|---|---|
+| flat colour, 160×140 | 989 B | 494 B | **truncated file** | truncated file |
+| noise, 300×300 | 48,840 B | 24,420 B | readable | truncated file |
+| flat colour, 1024×768 | 12,917 B | 6,458 B | readable | truncated file |
+
+**Consequence:** pass 2's "a JPEG cut in half passes pre-flight" holds for the
+photo-like and larger cases, not for every JPEG. A first draft of this pass's
+copy-time test used the flat 160×140 image, which pre-flight caught, so the test
+failed for a reason unrelated to what it named. The test now uses the noisy
+image and asserts, as a control, that pre-flight passes it.
+
+### Labeling session file: removed on completion; Resume keeps the stored classes
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/cli/classify.py:_open_labeling_session`, `_materialize_labels`
+**Missing:** what happens to the session file after a successful Finish; what
+"Resume" means when `-c` disagrees.
+**Assumed:**
+- **Deleted once `dataset/` is committed.** The file exists to resume an
+  interrupted session; kept, the next `optica label` on that folder would offer
+  to resume a finished one. `config --clear-staging` still lists any left by
+  interruption.
+- **The prompt fires whenever a session file exists** for the source: `[R]
+  Resume   [S] Start fresh`, plus `[A] Adopt <new list>` on a mismatch. `--yes`
+  picks R (the `--yes` table); a non-interactive run without `--yes` is a hard
+  error; adopting is never automatic.
+- **Resume on a mismatch continues with the session's stored classes** and says
+  so. Adopt deletes entries for departing classes (they return to the queue)
+  and saves at once. Start fresh deletes the file.
+- A new session is not written until its first decision.
+**Reversible?** Yes.
+
+### Exit codes and completion lines for a browser session that does not finish
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/cli/classify.py:_label_body`; `src/optica/utils/logging.py:incomplete`
+**Missing:** the plan says timeout is "treated as a Ctrl+C interruption" for
+staging, gives the exit-code table (3 for an `✗ X incomplete` completion, 130
+for SIGINT), and does not say which applies to a timeout.
+**Assumed:** timeout → `✗ Labeling incomplete — the session closed after 60
+minutes without activity; progress is saved…`, **exit 3**. Ctrl+C → `✗ Labeling
+incomplete — interrupted; progress is saved…`, **exit 130**. Staging is kept in
+both. A timeout is an incomplete step, not a signal, so it takes the
+incomplete-completion code; Ctrl+C keeps the shell convention.
+**`olog.incomplete()` added:** the `✗` line on stderr, never silenced by
+`--quiet` — unlike `success`, it is the only record an unattended run has of why
+it exited 3.
+**Reversible?** Yes.
+
+### `utils/prompts.py` gains `choose()` for multi-letter prompts
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/utils/prompts.py:choose`
+**Missing:** only Y/N prompts existed; the labeling resume prompt has two or
+three letters. Passes 4 and 5 need the same shape (imbalance F/C/A, run R/C/S).
+**Assumed:** one function: the menu on one line (`[R] Resume   [S] Start
+fresh`), letters case-insensitive, re-asks on an invalid answer, `assume_yes`
+carries the letter the `--yes` table lists, and no terminal without `--yes` is
+a hard error of the caller's class.
+**Reversible?** Yes.
+
+### Labeling interaction details the plan leaves open
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/labeling.py`
+**Assumed:**
+- **"Re-assigning returns to the position the user came from"** is read as
+  plain auto-advance to the next image — which, after one Back, *is* where the
+  user came from. The plan calls it "the same rule applied consistently rather
+  than a special case", which rules out remembering a furthest position.
+- **Next on an image that already has a label keeps the label.** Skip is what
+  Next records for an image with no decision.
+- **Next and assignment at the last image stay there** (`at_end` in the state).
+- **Counts and Finish gating count only images in this run.** An entry for a
+  file that has since gone, or that pre-flight now rejects, cannot be delivered,
+  so it does not help clear the floor.
+- **A session with nothing left to label** opens on the image it was left at.
+- **No keyboard shortcuts.** None are specified; not added.
+**Reversible?** Yes.
+
+### Page scripts: syntax-checked and `pageItems` probed with a local Node — not a test
+**Pass:** 3   **Date:** 2026-09-14   **Where:** `src/optica/server/static/*.js`
+Node v24.12.0 exists on the build machine (not in CI, not a dependency).
+`node --check` passes `shared.js` and `labeling.js`. `pageItems(current, total)`
+returned `[1]` (1,1); `[1,2,"…",5]` (1,5); `[1,2,3,4,"…",7]` (3,7);
+`[1,"…",4,5,6,"…",10]` (5,10); `[1,2,"…",10]` (1,10); `[1,"…",9,10]` (10,10);
+`[1,2,3,4,5,"…",9]` (4,9) — no ellipsis ever hides a single page. `formatDuration`
+matched the Python one on 150, 1800, 45 and 60 seconds. A manual check, recorded
+so it is not mistaken for coverage; the `TODO(test)` markers stay.
+
+### Checkpoint 2 — state
+**Pass:** 3   **Date:** 2026-09-14
+**Built:** `server/labeling.py` (controller), `static/labeling.html`,
+`static/labeling.js`, the labeling routes in `routes.py`, and `optica label`
+end to end in `cli/classify.py`; `choose()`, `incomplete()`,
+`partial_destination()`, `commit_dataset()`.
+**Tests:** `.venv` (web installed) **1156 passed, 14 skipped** (1170 collected);
+`.smoke/ci-venv` (Core + `[test]`) **1113 passed, 23 skipped** (1136). Skips
+unchanged from checkpoint 1: 14 = 13 + 1 `_NO_LOGIC`; 23 = 13 + 1 `_NO_LOGIC` +
+1 `test_routes.py` module + 8 `TestServe`. Collections differ by 34 =
+`test_routes.py`'s 35 tests (19 shared + 16 labeling) − 1 for the module-level
+skip. Added this checkpoint: 44 `test_labeling.py`, 30
+`test_label_command.py`, 16 labeling routes, 5 `choose`, 2 `incomplete`,
+4 dataset commit = 101; 1170 − 1068 = 102, the extra 1 being
+`test_tree.py`'s parametrized mirror check for `server/labeling.py`.
+Ruff and mypy clean in both environments.
+**Not yet run:** the real page in a real browser — checkpoint 4.
