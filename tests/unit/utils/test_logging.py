@@ -211,3 +211,19 @@ class TestRenderError:
         captured = capsys.readouterr()
         assert captured.out == ""
         assert "boom" in captured.err
+
+
+class TestIncomplete:
+    """``✗ X incomplete — reason``: the completion line an exit 3 carries."""
+
+    def test_goes_to_stderr_with_the_fail_marker(self, capsys):
+        olog.incomplete("Labeling incomplete — interrupted")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        marks = olog.markers_for(olog.err_console)
+        assert f"{marks.fail} Labeling incomplete — interrupted" in captured.err
+
+    def test_is_not_silenced_by_quiet(self, capsys):
+        olog.set_verbosity(olog.Verbosity.QUIET)
+        olog.incomplete("Labeling incomplete — timed out")
+        assert "Labeling incomplete — timed out" in capsys.readouterr().err

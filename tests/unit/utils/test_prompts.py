@@ -6,7 +6,7 @@ a declined prompt exits ``3`` while ``click.Abort`` exits ``130``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import pytest
 import typer
@@ -225,3 +225,54 @@ class TestPlanValuesStillToImplement:
     @pytest.mark.skip(reason="stub - pass 5")
     def test_yes_never_drives_optica_setup(self):
         """Setup's interactivity is binary and driven by its own flags."""
+
+
+class TestChoose:
+    """Multi-letter choice prompts, e.g. the labeling resume prompt."""
+
+    OPTIONS: ClassVar[dict[str, str]] = {"R": "Resume", "S": "Start fresh"}
+
+    def test_yes_takes_the_listed_option_without_asking(
+        self, interactive, monkeypatch
+    ):
+        from optica.utils.prompts import choose
+
+        monkeypatch.setattr("typer.prompt", lambda *a, **k: pytest.fail("prompted"))
+        assert choose("Resume?", self.OPTIONS, default="R", assume_yes="r") == "R"
+
+    def test_letters_match_case_insensitively(self, interactive, monkeypatch):
+        from optica.utils.prompts import choose
+
+        monkeypatch.setattr("typer.prompt", lambda *a, **k: " s ")
+        assert choose("Resume?", self.OPTIONS, default="R") == "S"
+
+    def test_the_menu_is_shown_and_enter_takes_the_default(
+        self, interactive, monkeypatch
+    ):
+        from optica.utils.prompts import choose
+
+        seen: list[str] = []
+
+        def fake_prompt(text, **kwargs):
+            seen.append(text)
+            return kwargs["default"]
+
+        monkeypatch.setattr("typer.prompt", fake_prompt)
+        assert choose("Resume?", self.OPTIONS, default="R") == "R"
+        assert "[R] Resume   [S] Start fresh" in seen[0]
+
+    def test_an_invalid_answer_asks_again(self, interactive, monkeypatch, capsys):
+        from optica.utils.prompts import choose
+
+        answers = iter(["x", "", "S"])
+        monkeypatch.setattr("typer.prompt", lambda *a, **k: next(answers))
+        assert choose("Resume?", self.OPTIONS, default="R") == "S"
+        assert "Please answer one of: R, S" in capsys.readouterr().err
+
+    def test_no_terminal_and_no_yes_is_a_hard_error(self, monkeypatch):
+        from optica.utils.prompts import choose
+
+        monkeypatch.setattr("optica.utils.prompts.is_interactive", lambda: False)
+        with pytest.raises(OpticaValidationError) as caught:
+            choose("Resume?", self.OPTIONS, default="R", non_interactive_fix="Use --yes")
+        assert caught.value.fix == ["Use --yes"]

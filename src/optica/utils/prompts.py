@@ -27,6 +27,7 @@ __all__ = [
     "CLASS_PROMPT",
     "PromptCategory",
     "ask_class_names",
+    "choose",
     "confirm",
     "confirm_or_abort",
     "is_interactive",
@@ -176,6 +177,54 @@ def confirm(
         )
 
     return typer.confirm(question, default=default)
+
+
+def choose(
+    question: str,
+    options: dict[str, str],
+    *,
+    default: str,
+    assume_yes: str | None = None,
+    non_interactive_error: type[OpticaError] = OpticaValidationError,
+    non_interactive_fix: str | list[str] | None = None,
+) -> str:
+    """Ask a multi-letter choice prompt (``[R] Resume   [S] Start fresh``).
+
+    ``--yes`` takes the option the ``--yes`` table lists for this prompt, which
+    the caller passes as ``assume_yes``; a prompt with no listed option leaves it
+    None and is asked even under ``--yes``.
+
+    Args:
+        question: The question, printed above the options.
+        options: Letter to label, in display order. Letters match
+            case-insensitively.
+        default: The letter taken on a bare Enter.
+        assume_yes: The letter ``--yes`` picks, when ``--yes`` was given.
+        non_interactive_error: Raised when no prompt can fire and ``--yes`` did
+            not answer.
+        non_interactive_fix: Fix line(s) for that error.
+
+    Returns:
+        The chosen letter, upper-cased.
+    """
+    if assume_yes is not None:
+        return assume_yes.upper()
+    if not is_interactive():
+        raise non_interactive_error(
+            question,
+            why="This needs an answer, and there is no terminal to ask on.",
+            fix=non_interactive_fix or [],
+        )
+    letters = {letter.upper(): label for letter, label in options.items()}
+    menu = "   ".join(f"[{letter}] {label}" for letter, label in letters.items())
+    while True:
+        answer: str = typer.prompt(
+            f"{question}\n{menu}", default=default.upper(), show_default=True
+        )
+        choice = answer.strip().upper()[:1]
+        if choice in letters:
+            return choice
+        typer.echo(f"Please answer one of: {', '.join(letters)}", err=True)
 
 
 def confirm_or_abort(

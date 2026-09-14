@@ -32,6 +32,7 @@ __all__ = [
     "detail",
     "err_console",
     "get_verbosity",
+    "incomplete",
     "markers_for",
     "out_console",
     "protect_streams",
@@ -151,6 +152,16 @@ def success(message: str) -> None:
     if _verbosity >= Verbosity.NORMAL:
         marks = markers_for(out_console)
         out_console.print(f"[bold green]{marks.ok}[/bold green] {message}")
+
+
+def incomplete(message: str) -> None:
+    """Print an ``✗ X incomplete — reason`` completion line to stderr.
+
+    Unlike :func:`success`, never silenced: an incomplete step exits ``3``, and
+    the line is the only record an unattended run has of why.
+    """
+    marks = markers_for(err_console)
+    err_console.print(f"[bold red]{marks.fail}[/bold red] {message}")
 
 
 def warn(message: str, *, why: str | None = None, fix: str | None = None) -> None:
