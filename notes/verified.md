@@ -1187,3 +1187,63 @@ anyio.from_thread.BlockingPortal instead." Tests pass.
 suite. `httpx` is Core, so moving the test client to `httpx2` would add a
 package for tests alone; not done. Recorded so the warning is recognised rather
 than chased when a later Starlette turns it into an error.
+
+### `webbrowser.open` falls through to the real default browser when `BROWSER` fails
+
+**Date:** 2026-09-14
+**How:** read CPython 3.11.9's `Lib/webbrowser.py` in `.venv` (`open`, l.72–90;
+`register`, l.23–36; `GenericBrowser`, l.159–185; the `BROWSER` block, l.584–596),
+then, with `BROWSER='C:\Program Files\Git\usr\bin\true.exe'`:
+```
+python -c "import webbrowser; b = webbrowser.get(); print(type(b).__name__, b.name, b.args, webbrowser._tryorder[:3], b.open('http://127.0.0.1:9/probe'), webbrowser.open('http://127.0.0.1:9/probe'))"
+"C:/Program Files/Git/usr/bin/true.exe" http://127.0.0.1:9/x; echo $?
+```
+**Result:**
+- `BROWSER` is split on `os.pathsep`; each entry becomes `GenericBrowser(<entry>)`
+  **prepended** to `_tryorder`. `GenericBrowser.open` runs `Popen([<entry>, url])`
+  — the whole entry is the executable, with no arguments — and returns
+  `not p.wait()`; `OSError` returns False.
+- `webbrowser.open` walks `_tryorder` and **moves to the next browser whenever one
+  returns False.**
+- Measured: `_tryorder` head was `['C:\Program Files\Git\usr\bin\true.exe',
+  'windows-default', 'C:\Program Files\Internet Explorer\IEXPLORE.EXE']`;
+  `GenericBrowser`, args `['%s']`; both `open` calls returned `True`. `true.exe`
+  with a URL argument exits `0`.
+**Consequence:** to run `optica label`/`curate` live without opening a tab,
+`BROWSER` must name an executable that exits 0. A value that is misspelt, needs
+arguments, or exits non-zero **does not fail safe — `windows-default` opens the
+real browser.** Independent of the test suite's `_no_real_browser` guard, which
+exists only inside pytest.
+
+### The wheel carries all eleven `server/` files
+
+**Date:** 2026-09-14
+**How:** `.venv/Scripts/python.exe -m pip wheel . --no-deps -w .smoke/wheel`, then
+`zipfile.ZipFile(<wheel>).namelist()` filtered to `/server/`.
+**Result:** `__init__.py`, `app.py`, `curation.py`, `labeling.py`, `routes.py`,
+and under `static/`: `curation.html`, `curation.js`, `labeling.html`,
+`labeling.js`, `shared.css`, `shared.js` — 5 modules + 6 static files = 11, every
+file on disk. Closes the re-check promised in "Hatchling ships `server/static/`".
+
+### Open Images Fetch More, live, through the curation page
+
+**Date:** 2026-09-14
+**How:** `optica curate --yes` from `.smoke/pass3-live/curate/` (scratch home
+seeded from pass 2's `.smoke/pass2-fetch/home/.optica/`, `images_per_class = 12`),
+driven over HTTP by `scratchpad/drive.py`: deselect 3 cat images, then
+`POST /api/curate/fetch-more`.
+**Result:** request `{"class": "cat", "requested": 3}` → finished `{"delivered":
+3, "error": null}`; `cat` went from 9 of 12 selected to 12 of 15. The three new
+files decode:
+
+| File | Format | Size (px) | Bytes |
+|---|---|---|---|
+| `0013.jpg` | JPEG | 640×427 | 46,372 |
+| `0014.jpg` | JPEG | 640×640 | 68,119 |
+| `0015.jpg` | JPEG | 424×640 | 90,885 |
+
+Numbering continued from `0012`; the class directory was renamed to `.partial`
+and back during the fetch and the three deselections held. No label-map or index
+download was needed — the seeded cache was reused.
+**Consequence:** `input/curation.py:fetch_more` and the browser Fetch More path
+are no longer "written but never run" for Open Images. Flickr remains unrun.
