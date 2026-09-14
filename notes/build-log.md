@@ -2764,3 +2764,77 @@ counted: 2 edits to existing entries made at the human's request (the
 real-Click consequence, the session key's ratification status).
 
 **Pass 3 is complete.** Next: the plan-amendment session, then pass 4.
+
+### Plan amendment session 2 — the six open items decided
+**Pass:** between 3 and 4   **Date:** 2026-09-14   **Where:** `spec/optica-plan-v1-core.md`
+**What this is:** the outcome of the second out-of-repo plan-amendment session,
+recorded here so a later pass reading the six proposals above can tell which
+landed. The `spec/` edits were applied by the user, not by an agent.
+
+| # | Item | Disposition | Sites |
+|---|---|---|---|
+| 12 | Class-name rule 1 misses trailing dots, spaces, control characters | **Amended** | l.242 |
+| 13 | Route tests cannot run in CI as the plan stands | **Amended** — with 16, one edit pair | l.132 |
+| 14 | Browser session key — `Host` check and session cookie | **Ratified** — behaviourally | l.887, l.1700 |
+| 15a | A stored deselection and a class-folder rename | **Ratified — option B** | l.1016, l.1012 |
+| 15b | "Start fresh" leaves that class's deselections behind | **Amended** — accepted limitation; fix is fast-follow | l.1020 |
+| 16 | Install the web extra in CI | **Amended** — with 13 | l.132 |
+
+**Item 12 — the plan now leads the code, and no pass owns the catch-up.** l.242
+excludes names containing U+0000–U+001F and names ending in `.` or a space.
+`src/optica/input/classes.py:class_name_problem` implements the pre-amendment
+list, so for the first time in this run a shipped module and the plan disagree.
+Two predicates and their tests close it, as that entry's *Reversible?* line
+already says. Pass 4 does not touch `input/` validation, so this needs an owner
+assigned rather than inherited.
+
+**Item 12 — correction to the agenda's framing.** The session prompt and the run
+record's §4 both describe the gap as one *"the `_x` collision suffix would not
+catch"*. `_x` is the staged-filename suffix at plan l.680 and the
+checkpoint/export folder suffix at l.1093 and l.1216; it never applies to a class
+folder. The mechanism that should catch `cat.` against `cat` and does not is
+**rule 2 at l.243**, which compares case only. Nothing downstream depends on the
+wrong framing, but it is in two documents and this is the correction of record.
+
+**Items 13 and 16 — what the workflow change must preserve.** l.132 now sanctions
+`optica[web]` on at least one leg **and** requires that at least one leg install
+no extras at all. Two things must stay true after the workflow is edited. The
+extras-free leg is what keeps the import-time contract (l.1417) under continuous
+check, along with pass 3's FastAPI-free modules and `server/__init__.py` staying
+logic-free. And a stray `import click` under `src/optica/` must still fail
+somewhere: on a leg with the web extra it will not, because uvicorn brings real
+Click (`notes/verified.md` § *What `optica[web]` resolves to*). The 27 tests that
+skip today — 19 route, 8 `TestServe` — run on whichever leg installs the extra.
+Leg count does not change. The arrangement is not specified by the plan and was
+not this session's to specify.
+
+**Item 14 — no code change, and a new stop.** The `Host` check and the session
+cookie are now what l.887 and l.1700 describe, at the level of the rule rather
+than the mechanism: only the session Optica itself opened can drive the server.
+The mechanism stays here rather than in the plan, on the same reasoning that
+removed an API name from l.220 in the first session. l.887 also now states that
+these two guards are the whole of V1's browser-security surface, which makes
+anything further a plan-level stop rather than an implementing pass's call —
+the disposition that entry asked for.
+
+**Item 15a — B is the plan's reading, and the stored form is settled.** l.1016
+states the class-plus-file-name match. What is written is unchanged: full paths,
+`"version": 1`, the shape at l.1010–1014. Pass 3's deferral — that checkpoint 4's
+integration tests would not assert the stored form until this was decided — is
+lifted; the stored form may now be asserted. Option A was rejected because a
+version-1 file read under A matches nothing, which is this same defect in a new
+form, so it needs `"version": 2`; l.1006 makes that a hard error telling the user
+to delete the file, costing them every deselection they had. Writing a migration
+instead is V1 functionality.
+
+**Item 15a, incidental.** l.1012's example entry read `…IMG_0007.jpg`, a name
+auto-fetch staging cannot produce — l.797 numbers staged images `0001.jpg`
+upward and l.1008 scopes curation to auto-fetch staging. Now `…0007.jpg`.
+
+**Item 15b — recorded, not fixed.** l.1020 carries an accepted-limitation
+sentence: Start fresh does not clear that class's entries in `curation.json`, so
+a deselection recorded before a start-fresh applies to whichever new image takes
+the reused name, and that image opens already deselected. All three candidate
+fixes are V1 functionality and go to the fast-follow. A later pass should not
+close it opportunistically — having fetch clear curation's state is the coupling
+option C was rejected for.
