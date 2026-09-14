@@ -67,6 +67,7 @@ __all__ = [
     "register_source",
     "staged_classes",
     "staged_images",
+    "staged_queries",
 ]
 
 CANDIDATE_SLACK: Final = 1.5
@@ -532,6 +533,30 @@ def _read_sidecar(folder: Path, source: str) -> dict[str, Any]:
     record.setdefault("tried", {})
     record.setdefault("delivered", {})
     return data
+
+
+def staged_queries(folder: Path) -> set[str]:
+    """The queries a staged class was fetched with, across every source.
+
+    Read from the class's ``.fetch.json``. An ordinary class has one query, its
+    own name; a grouped blocklist class has its sub-terms. Empty when the
+    sidecar is missing or unreadable.
+    """
+    try:
+        data = json.loads((folder / _SIDECAR).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(data, dict) or not isinstance(data.get("sources"), dict):
+        return set()
+    queries: set[str] = set()
+    for record in data["sources"].values():
+        if not isinstance(record, dict):
+            continue
+        for key in ("tried", "delivered"):
+            section = record.get(key)
+            if isinstance(section, dict):
+                queries.update(str(query) for query in section)
+    return queries
 
 
 def fetch_class(

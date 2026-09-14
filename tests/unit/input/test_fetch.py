@@ -505,3 +505,44 @@ class TestStagedClasses:
 
     def test_no_staging_is_empty(self, tmp_path):
         assert f.staged_classes(tmp_path) == []
+
+
+class TestStagedQueries:
+    """Which queries a staged class came from — grouped classes have several."""
+
+    def test_reads_tried_and_delivered_across_sources(self, tmp_path):
+        import json
+
+        folder = tmp_path / "defective"
+        folder.mkdir()
+        (folder / ".fetch.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "sources": {
+                        "open-datasets": {
+                            "tried": {"cracked_screen": ["a"]},
+                            "delivered": {"dented_case": 3},
+                        },
+                        "flickr": {"tried": {"bent_pin": []}, "delivered": {}},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert f.staged_queries(folder) == {"cracked_screen", "dented_case", "bent_pin"}
+
+    def test_fetched_by_fetch_class_it_is_the_class_name(self, fake_home):
+        candidates, bodies = _pool("c", 3)
+        cls = ResolvedClass("cat", ["cat"], per_query=2)
+        f.fetch_class(cls, StubSource({"cat": candidates}), StubDownloader(bodies))
+        folder = fake_home / ".optica" / "staging" / "cat"
+        assert f.staged_queries(folder) == {"cat"}
+
+    @pytest.mark.parametrize("content", [None, "{not json", "[]", '{"sources": 3}'])
+    def test_a_missing_or_unreadable_sidecar_is_empty(self, tmp_path, content):
+        folder = tmp_path / "cat"
+        folder.mkdir()
+        if content is not None:
+            (folder / ".fetch.json").write_text(content, encoding="utf-8")
+        assert f.staged_queries(folder) == set()

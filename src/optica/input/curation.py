@@ -16,14 +16,25 @@ what is there — the resume prompt belongs to ``optica fetch`` alone.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Final
 
-from optica.exceptions import OpticaValidationError
-from optica.input.fetch import StagedClass, staged_classes, staged_images
-from optica.input.sessions import CurationSession, load_curation
+from optica.exceptions import OpticaError, OpticaValidationError
+from optica.input.classes import ResolvedClass
+from optica.input.fetch import (
+    ClassFetchReport,
+    FetchSource,
+    ImageGetter,
+    StagedClass,
+    fetch_class,
+    staged_classes,
+    staged_images,
+    staged_queries,
+)
+from optica.input.sessions import CurationSession, load_curation, staging_root
 from optica.input.validation import md5_of
 
 __all__ = [
@@ -34,6 +45,9 @@ __all__ = [
     "RejectionTrigger",
     "SelectionWarning",
     "confirm_blocked_classes",
+    "fetch_more",
+    "fetch_more_refusal",
+    "fetch_more_shortfall",
     "load_view",
     "materialize_selection",
     "open_session",
@@ -225,3 +239,66 @@ def materialize_selection(
             (folder / path.name).write_bytes(data)
             report.written[name] = report.written.get(name, 0) + 1
     return report
+
+
+# ---------------------------------------------------------------- fetch more
+
+
+def fetch_more_shortfall(images_per_class: int, selected: int) -> int:
+    """Images Fetch More requests: enough to restore ``images_per_class`` selected.
+
+    Zero when the class already has that many selected — a class can trip the
+    percentage trigger with plenty selected, and fetching more would only lower
+    its percentage further.
+    """
+    return max(0, images_per_class - selected)
+
+
+def fetch_more_refusal(name: str, home: Path | None = None) -> str | None:
+    """Why Fetch More cannot run for ``name`` in this build, or None if it can.
+
+    A grouped blocklist class was fetched as several sub-term queries, and its
+    images are CLIP-scored after the fetch — a stage that arrives with
+    ``input/clip.py``. An ordinary class was fetched as one query, its own name.
+    """
+    root = staging_root(home)
+    folder = root / name if (root / name).is_dir() else root / f"{name}.partial"
+    queries = staged_queries(folder)
+    if queries and queries != {name}:
+        return (
+            f"{name} was fetched as a group of sub-terms, which needs CLIP filtering; "
+            "that is not available in this build."
+        )
+    return None
+
+
+def fetch_more(
+    name: str,
+    count: int,
+    source: FetchSource,
+    downloader: ImageGetter,
+    home: Path | None = None,
+    *,
+    on_image: Callable[[], None] | None = None,
+) -> ClassFetchReport:
+    """Fetch ``count`` more images for a staged class — the Curation Adapter's bridge.
+
+    Runs the Fetch Adapter's own fill-to-target loop with the target raised by
+    ``count``, so candidates already tried are skipped and new images continue
+    the class's numbering and default to selected (``curation.json`` records
+    deselections only).
+
+    Raises:
+        OpticaError: When :func:`fetch_more_refusal` gives a reason.
+    """
+    refusal = fetch_more_refusal(name, home)
+    if refusal is not None:
+        raise OpticaError(
+            f"Fetch More is not available for {name}.",
+            why=refusal,
+            fix=f"Fetch it again from the start: optica fetch --classes {name}",
+        )
+    staged = next((s for s in staged_classes(home) if s.name == name), None)
+    existing = staged.images if staged is not None else 0
+    target = ResolvedClass(name, [name], per_query=existing + count)
+    return fetch_class(target, source, downloader, home, on_image=on_image)

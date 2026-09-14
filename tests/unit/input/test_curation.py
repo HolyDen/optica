@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from optica.exceptions import OpticaCurationError, OpticaValidationError
+from optica.exceptions import OpticaCurationError, OpticaError, OpticaValidationError
 from optica.input import curation as cur
 from optica.input.sessions import CurationSession
 
@@ -123,3 +123,71 @@ class TestMaterialize:
         )
         assert report.written == {"cat": 1}
         assert report.duplicates == {"cat": 1}
+
+
+class TestFetchMore:
+    """The Curation Adapter's bridge to the Fetch Adapter.
+
+    Covers plan § *Class imbalance and image validation*: "curation's Fetch More
+    banner likewise requests enough to restore images_per_class selected".
+    """
+
+    @pytest.mark.parametrize(
+        ("per_class", "selected", "count"), [(50, 12, 38), (50, 50, 0), (50, 80, 0)]
+    )
+    def test_requests_enough_to_restore_images_per_class_selected(
+        self, per_class, selected, count
+    ):
+        assert cur.fetch_more_shortfall(per_class, selected) == count
+
+    def test_an_ordinary_class_may_fetch_more(self, fake_home):
+        _stage(fake_home, "cat", 3)
+        assert cur.fetch_more_refusal("cat") is None
+
+    def test_a_grouped_class_is_refused_in_this_build(self, fake_home):
+        import json
+
+        _stage(fake_home, "defective", 3)
+        sidecar = fake_home / ".optica" / "staging" / "defective" / ".fetch.json"
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "sources": {
+                        "open-datasets": {
+                            "tried": {"cracked_screen": [], "dented_case": []},
+                            "delivered": {},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        reason = cur.fetch_more_refusal("defective")
+        assert reason is not None
+        assert "needs CLIP filtering" in reason
+        with pytest.raises(OpticaError, match="Fetch More is not available"):
+            cur.fetch_more("defective", 5, None, None)  # type: ignore[arg-type]
+
+    def test_fetches_count_more_continuing_the_numbering(self, fake_home):
+        from tests.unit.input.test_fetch import StubDownloader, StubSource, _pool
+
+        candidates, bodies = _pool("cat", 12)
+        source = StubSource({"cat": candidates})
+        downloader = StubDownloader(bodies)
+        from optica.input.classes import ResolvedClass
+        from optica.input.fetch import fetch_class, staged_images
+
+        fetch_class(ResolvedClass("cat", ["cat"], per_query=4), source, downloader)
+        seen: list[int] = []
+        report = cur.fetch_more(
+            "cat", 3, source, downloader, on_image=lambda: seen.append(1)
+        )
+        folder = fake_home / ".optica" / "staging" / "cat"
+        assert report.delivered == 3
+        assert len(seen) == 3
+        assert [p.name for p in staged_images(folder)] == [
+            f"{i:04d}.jpg" for i in range(1, 8)
+        ]
+        # Candidates the first fetch tried are not downloaded again.
+        assert len(downloader.calls) == len(set(downloader.calls)) == 7
