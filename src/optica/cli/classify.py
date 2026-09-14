@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import math
 import shutil
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -31,6 +32,7 @@ import typer
 from optica.cli import GlobalState, get_state, split_values
 from optica.config.defaults import MODELS, MODES, SOURCES
 from optica.config.manager import ResolvedConfig, Source
+from optica.config.schema import OpticaConfig
 from optica.exceptions import ExitCode, OpticaError, OpticaValidationError
 from optica.input import manager as input_manager
 from optica.input.classes import (
@@ -52,6 +54,29 @@ from optica.input.fetch import (
     make_client,
     staged_classes,
 )
+from optica.input.local import (
+    copy_into_dataset,
+    copy_note,
+    parse_manifest,
+    preflight,
+    require_flat_folder,
+)
+from optica.input.sessions import LabelingSession, SourceType, load_labeling
+from optica.input.validation import (
+    InPlaceReport,
+    check_floor,
+    check_floor_after_dedupe,
+    reasons_summary,
+)
+from optica.server.app import (
+    BrowserSession,
+    IdleTimer,
+    Outcome,
+    format_duration,
+    load_web,
+    serve,
+)
+from optica.server.labeling import LabelingController
 from optica.utils import logging as olog
 from optica.utils import prompts
 from optica.utils.lockfile import acquire_lock
@@ -536,11 +561,284 @@ def label(
 ) -> None:
     """Label a flat folder of images in the browser."""
     state = _globals(get_state(ctx), verbose=verbose, quiet=quiet, yes=yes, force=force)
-    state.config()
-    input_manager.require_single_input_source(folder, manifest)
+    config = state.config().config
+    source = input_manager.require_single_input_source(folder, manifest)
+    if source is input_manager.InputSource.FETCH:
+        raise OpticaValidationError(
+            "optica label needs a flat folder or a manifest to label.",
+            why="Neither --folder nor --manifest was given.",
+            fix=[
+                "Label a folder: optica label --folder ./images -c cat,dog",
+                "Label a manifest: optica label --manifest ./images.csv -c cat,dog",
+            ],
+        )
+    # The whole of this command is the browser stage, so its dependency is
+    # checked here — before any prompt spends the user's attention.
+    load_web()
+    target = _label_input(folder, manifest)
+    names = _resolve_classes(classes, "label", state)
     with acquire_lock("optica label"):
-        split_values(classes)
-        raise _not_yet("optica label")
+        _label_body(state, config, target, names, dataset, overwrite=overwrite)
+
+
+@dataclass(frozen=True)
+class _LabelTarget:
+    """What ``optica label`` labels: a flat folder or an unlabeled manifest."""
+
+    flag: str
+    path: Path
+    files: list[Path]
+    source_type: SourceType
+    content_hash: str | None = None
+
+
+def _label_input(folder: Path | None, manifest: Path | None) -> _LabelTarget:
+    if folder is not None:
+        files = require_flat_folder(folder)
+        return _LabelTarget(
+            "--folder", folder, [f.resolve() for f in files], SourceType.FOLDER
+        )
+    assert manifest is not None
+    parsed = parse_manifest(manifest)
+    # A fully labeled manifest is a hard error, not a correction pass.
+    parsed.require_unlabeled_for_label()
+    if parsed.duplicates_removed:
+        olog.status(
+            f"Manifest: {parsed.duplicates_removed} exact duplicate row"
+            f"{'s' if parsed.duplicates_removed != 1 else ''} collapsed."
+        )
+    # Read only. The manifest is disposable input and never rewritten: its
+    # content hash is part of the session ID, so writing to it would orphan the
+    # user's labeling progress and silently start a blank session next time.
+    return _LabelTarget(
+        "--manifest",
+        manifest,
+        [row.path for row in parsed.rows],
+        SourceType.MANIFEST,
+        parsed.content_hash,
+    )
+
+
+def _open_labeling_session(
+    state: GlobalState, target: _LabelTarget, names: list[str]
+) -> LabelingSession:
+    """Resume, adopt, or start fresh — before any image is read.
+
+    ``-c`` is never part of the session ID, so a corrected class list finds the
+    same session; a mismatch adds **Adopt** to the prompt. ``--yes`` picks
+    Resume; adopting is never automatic.
+    """
+    fresh = LabelingSession.new(
+        None, target.path, target.source_type, names, target.content_hash
+    )
+    if not fresh.path.exists():
+        return fresh
+    stored = load_labeling(fresh.path)
+    labeled = sum(1 for e in stored.entries.values() if e.get("state") == "labeled")
+    skipped = sum(1 for e in stored.entries.values() if e.get("state") == "skipped")
+    olog.err_console.print(
+        f"A labeling session for {stored.source} was found: {labeled} labeled, "
+        f"{skipped} skipped (last saved {stored.updated})."
+    )
+    options = {"R": "Resume", "S": "Start fresh"}
+    mismatch = stored.classes_disagree(names)
+    if mismatch:
+        olog.err_console.print(f"  Session classes: {', '.join(stored.classes)}")
+        olog.err_console.print(f"  --classes:       {', '.join(names)}")
+        options = {
+            "R": f"Resume with {', '.join(stored.classes)}",
+            "A": f"Adopt {', '.join(names)}",
+            "S": "Start fresh",
+        }
+    choice = prompts.choose(
+        "Resume this labeling session?",
+        options,
+        default="R",
+        assume_yes="R" if state.yes else None,
+        non_interactive_fix="Re-run with --yes to resume it.",
+    )
+    if choice == "S":
+        fresh.path.unlink()
+        return fresh
+    if choice == "A":
+        # Entries in a departing class return to the queue as not yet reached.
+        departed = stored.adopt_classes(names)
+        stored.save()
+        if departed:
+            olog.status(
+                f"{departed} label{'s' if departed != 1 else ''} for removed classes "
+                "returned to the queue."
+            )
+    elif mismatch:
+        olog.status(f"Resuming with the session's classes: {', '.join(stored.classes)}")
+    return stored
+
+
+def _with_dataset(argv: list[str], value: str) -> str:
+    """The invocation with ``--dataset`` set to ``value``, every other flag kept."""
+    out: list[str] = []
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+            continue
+        if arg in ("--dataset", "-d"):
+            skip = True
+            continue
+        if arg.startswith("--dataset="):
+            continue
+        out.append(arg)
+    return "optica " + " ".join([*out, "--dataset", value])
+
+
+def _confirm_replace(
+    state: GlobalState, destination: Path, source_flag: str, *, overwrite: bool
+) -> None:
+    """The ``dataset/`` overwrite prompt, at command start, before the browser opens.
+
+    Keyed to the destination. Destructive: ``--yes`` and ``--force`` never answer
+    it, ``--overwrite`` is the only unattended route past it, and its default is
+    N. Nothing is deleted here — the old dataset is replaced only once the new
+    one is complete.
+    """
+    counts = input_manager.destination_contents(destination)
+    if counts is None:
+        return
+    if overwrite:
+        olog.warn(f"{destination} will be replaced (--overwrite).")
+        return
+    if not prompts.is_interactive():
+        raise input_manager.overwrite_refused(destination)
+    for line in input_manager.describe_destination(
+        destination, counts, f"labels from {source_flag}"
+    ):
+        olog.err_console.print(line)
+    if prompts.confirm(
+        "Continue? (n to exit)",
+        default=False,
+        category=prompts.PromptCategory.DESTRUCTIVE,
+    ):
+        return
+    marks = olog.markers_for(olog.err_console)
+    olog.err_console.print(f"[bold red]{marks.error}[/bold red] Aborted.")
+    olog.err_console.print(
+        f"  To train on your existing dataset: optica train --dataset {destination}"
+    )
+    olog.err_console.print("  To create a new dataset at a different path:")
+    olog.err_console.print(f"  {_with_dataset(state.argv, './new-dataset')}")
+    raise typer.Exit(code=ExitCode.ABORTED)
+
+
+def _report_unreadable(reports: list[InPlaceReport], when: str) -> None:
+    """User-provided files that could not be read: listed individually, untouched."""
+    if not reports:
+        return
+    count = len(reports)
+    olog.warn(
+        f"{count} file{'s' if count != 1 else ''} could not be read {when} and "
+        f"{'is' if count == 1 else 'are'} left out. The files are untouched."
+    )
+    for line in reasons_summary(reports):
+        olog.err_console.print(f"  {line}")
+
+
+def _label_body(
+    state: GlobalState,
+    config: OpticaConfig,
+    target: _LabelTarget,
+    names: list[str],
+    dataset: Path,
+    *,
+    overwrite: bool,
+) -> None:
+    session = _open_labeling_session(state, target, names)
+    _confirm_replace(state, dataset, target.flag, overwrite=overwrite)
+
+    readable, unreadable = preflight(target.files)
+    _report_unreadable(unreadable, "before labeling")
+
+    controller = LabelingController(session, readable, unreadable)
+    browser = BrowserSession(controller, IdleTimer(config.curation_timeout_minutes))
+    outcome = serve(
+        browser,
+        configured_port=config.curation_port,
+        headline=f"Labeling {len(readable)} image{'s' if len(readable) != 1 else ''}",
+    )
+    if outcome is Outcome.TIMED_OUT:
+        olog.incomplete(
+            "Labeling incomplete — the session closed after "
+            f"{format_duration(browser.timer.timeout_seconds)} without activity; "
+            "progress is saved. Run the same command to resume."
+        )
+        raise typer.Exit(code=ExitCode.ABORTED)
+    if outcome is Outcome.INTERRUPTED:
+        olog.incomplete(
+            "Labeling incomplete — interrupted; progress is saved. "
+            "Run the same command to resume."
+        )
+        raise typer.Exit(code=ExitCode.INTERRUPTED)
+    _materialize_labels(controller, dataset, unreadable)
+
+
+def _materialize_labels(
+    controller: LabelingController, dataset: Path, unreadable: list[InPlaceReport]
+) -> None:
+    """Copy labeled images into ``dataset/<class>/``, replacing what was there.
+
+    Written into a hidden sibling first, so the checks run before anything the
+    user already has is touched: a class that falls below the floor — through
+    duplicates, or a file that only failed when fully decoded — leaves the old
+    dataset as it was and the session file in place to resume.
+    """
+    items = controller.labeled_items()
+    session = controller.session
+    before = controller.counts()
+    partial = input_manager.partial_destination(dataset)
+    if partial.exists():
+        shutil.rmtree(partial)
+    olog.status(copy_note((path for path, _ in items), dataset))
+    report = copy_into_dataset(items, partial)
+    try:
+        _report_unreadable(report.unreadable, "while copying")
+        classes = {str(path): name for path, name in items}
+        for bad in report.unreadable:
+            before[classes[str(bad.path)]] -= 1
+        check_floor(before)
+        after = {name: report.copied.get(name, 0) for name in session.classes}
+        check_floor_after_dedupe(before, after, resumable_session=True)
+    except BaseException:
+        shutil.rmtree(partial, ignore_errors=True)
+        raise
+    input_manager.commit_dataset(partial, dataset)
+    session.path.unlink(missing_ok=True)
+
+    def plural(count: int, noun: str) -> str:
+        return f"{count} {noun}{'s' if count != 1 else ''}"
+
+    duplicates = sum(report.duplicates.values())
+    if duplicates:
+        olog.status(f"  {plural(duplicates, 'duplicate image')} removed.")
+    if report.renamed:
+        olog.status(
+            f"  {plural(report.renamed, 'file')} renamed to avoid a name collision "
+            "(_2, _3, …)."
+        )
+    if report.converted:
+        olog.status(f"  {report.converted} converted to JPEG or PNG.")
+    if report.resized:
+        olog.warn(
+            f"{plural(report.resized, 'image')} smaller than 128px "
+            f"{'were' if report.resized != 1 else 'was'} upscaled.",
+            why="Upscaled images carry less detail than their size suggests.",
+        )
+    skipped_files = len(unreadable) + len(report.unreadable)
+    details = f"{report.total} images labeled across {len(session.classes)} classes"
+    if skipped_files:
+        details += (
+            f" ({skipped_files} unreadable file{'s' if skipped_files != 1 else ''} "
+            "left out)"
+        )
+    olog.success(f"Labeling complete — {details}")
 
 
 @classify_app.command()
