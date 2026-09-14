@@ -2838,3 +2838,25 @@ the reused name, and that image opens already deselected. All three candidate
 fixes are V1 functionality and go to the fast-follow. A later pass should not
 close it opportunistically — having fetch clear curation's state is the coupling
 option C was rejected for.
+
+### `CLAUDE.md`'s Click note did not cover the web extra
+**Pass:** between 3 and 4   **Date:** 2026-09-14   **Where:** `CLAUDE.md` § "Settled points that the plan leaves implicit"
+**Found:** the 13 September correction says Typer vendors Click and that
+`import click` fails in a Core install. True, but incomplete. Pass 3 checkpoint
+1 established that `optica[web]` pulls real Click transitively through uvicorn,
+so under the web extra `import click` **succeeds**. The failure stops being
+loud: a mistaken `except click.UsageError` compiles, runs, and silently never
+fires, because Typer still raises the vendored `typer._click` one.
+**Action taken:** appended to the same paragraph rather than rewriting it. The
+instruction is unchanged — never `click.*`, use `typer`'s equivalents. Only the
+failure mode is now stated accurately for both install shapes.
+**Why it matters more after 14 September:** amendment item 16 sanctions
+`optica[web]` on at least one CI leg, so real Click will be present in a test
+environment. The same amendment requires at least one leg to install no extras
+at all, which is what keeps a stray `import click` under `src/` failing
+somewhere. Pass 6 owns the arrangement.
+**Provenance:** the consequence was raised at pass 3 checkpoint 1 and logged by
+that pass. The companion session undertook to make this edit at the pass 3
+boundary and did not; it was surfaced again by amendment session 2's addendum
+edits and supplied on 14 September. Recorded because a dropped handoff is worth
+seeing in the record, not only its repair.
