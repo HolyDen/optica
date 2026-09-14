@@ -152,6 +152,11 @@ declares no dependency, so `import click` fails in a Core install. Use
 `typer`'s equivalents — `typer.testing`, `typer._click.exceptions` — never
 `click.*`. Adding real Click would install a second `UsageError` class
 alongside the vendored one, and every `except` would silently stop firing.
+`optica[web]` is the exception that makes this dangerous: uvicorn depends on
+real Click, so with the web extra installed `import click` **succeeds**. The
+mistake stops being loud. A mistaken `except click.UsageError` then compiles,
+runs, and silently never fires, because Typer still raises the vendored
+`typer._click` one.
 
 ## Tests
 
