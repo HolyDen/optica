@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Optica — Label</title>
+  <link rel="stylesheet" href="/static/shared.css">
+  <style>
+    /* Labeling-only layout. The shared look lives in shared.css. */
+    .label-layout {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 16rem;
+      gap: var(--gap);
+    }
+    /* Reserved for the fast-follow preview strip: empty in V1, but present, so
+       the focused image never claims the whole viewport. */
+    .secondary-region {
+      border: 1px dashed var(--border);
+      border-radius: var(--radius);
+    }
+    .focus {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+    }
+    .focus-meta {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    .focus-meta .name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .stage {
+      flex: 1;
+      min-height: 12rem;
+      display: grid;
+      place-items: center;
+      background: var(--surface-2);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .stage img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .stage .broken {
+      color: var(--muted);
+      text-align: center;
+      padding: 1rem;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px 16px;
+    }
+    .class-radios {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      border: 0;
+      margin: 0;
+      padding: 0;
+    }
+    .class-radios legend {
+      position: absolute;
+      clip: rect(0 0 0 0);
+    }
+    .class-radios label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--surface);
+      cursor: pointer;
+    }
+    .class-radios label:has(input:checked) {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+    }
+    .nav {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
+    .auto-advance {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .finish-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 16px;
+      padding: 12px 14px;
+    }
+    .finish-bar .counts {
+      flex: 1;
+    }
+    .finish-hint {
+      flex-basis: 100%;
+      color: var(--danger);
+      margin: 0;
+    }
+    .skipped-tag {
+      color: var(--muted);
+      font-size: 0.9em;
+    }
+    @media (max-width: 760px) {
+      .label-layout {
+        grid-template-columns: 1fr;
+      }
+      .secondary-region {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="banner banner-warn timeout-banner" id="timeout-banner" role="alert" hidden>
+    <span class="banner-text"></span>
+    <button class="btn" type="button">Keep Session Active</button>
+  </div>
+
+  <header class="app-header">
+    <h1><span class="brand">Optica</span> · Label</h1>
+    <span class="muted" id="source"></span>
+    <span class="spacer"></span>
+    <button class="btn btn-quiet" id="theme" type="button">Dark mode</button>
+  </header>
+
+  <main>
+    <div id="notices"></div>
+
+    <div class="label-layout">
+      <section class="card focus" aria-label="Current image">
+        <div class="focus-meta">
+          <strong id="position" aria-live="polite"></strong>
+          <span class="name muted" id="image-name"></span>
+          <span class="skipped-tag" id="image-state"></span>
+        </div>
+        <div class="stage" id="stage"></div>
+        <div class="controls">
+          <div id="class-widget"></div>
+          <label class="auto-advance">
+            <input type="checkbox" id="auto-advance"> Auto-advance
+          </label>
+          <div class="nav">
+            <button class="btn" id="back" type="button">Back</button>
+            <button class="btn" id="next" type="button">Next</button>
+          </div>
+        </div>
+      </section>
+      <aside class="secondary-region" aria-hidden="true"></aside>
+    </div>
+
+    <section class="card finish-bar" aria-label="Progress">
+      <span class="counts" id="counts" aria-live="polite"></span>
+      <span class="muted" id="progress"></span>
+      <button class="btn btn-primary" id="finish" type="button">Finish</button>
+      <p class="finish-hint" id="finish-hint" hidden></p>
+    </section>
+  </main>
+
+  <script type="module" src="/static/labeling.js"></script>
+</body>
+</html>

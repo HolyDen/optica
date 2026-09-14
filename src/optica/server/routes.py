@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 
 from optica.server.app import STATIC_DIR, BrowserSession
+from optica.server.labeling import LabelingController
 
 __all__ = ["create_app"]
 
@@ -134,4 +135,93 @@ def create_app(session: BrowserSession) -> FastAPI:
             return JSONResponse({"error": "No such image."}, status_code=404)
         return FileResponse(path)
 
+    if isinstance(session.controller, LabelingController):
+        _add_labeling_routes(app, session, session.controller)
     return app
+
+
+def _bad_request(message: str) -> JSONResponse:
+    return JSONResponse({"error": message}, status_code=400)
+
+
+def _index(value: object) -> int | None:
+    # JSON `true` arrives as a Python bool, which is an int; it is not an index.
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+async def _body(request: Request) -> dict[str, Any]:
+    try:
+        data = await request.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _add_labeling_routes(
+    app: FastAPI, session: BrowserSession, controller: LabelingController
+) -> None:
+    """The labeling page's routes.
+
+    The idle timer resets on class assignment, Back or Next, and toggling
+    auto-advance (plan § *Session timer triggers*); reading state does not.
+    Every decision is written to the session file before the response returns.
+    """
+
+    @app.get("/api/label/state")
+    async def label_state() -> dict[str, Any]:
+        return controller.state()
+
+    @app.post("/api/label/assign", response_model=None)
+    async def label_assign(request: Request) -> Response | dict[str, Any]:
+        body = await _body(request)
+        index, name = _index(body.get("index")), body.get("class")
+        if index is None or not isinstance(name, str):
+            return _bad_request("Expected an image index and a class name.")
+        try:
+            state = controller.assign(index, name)
+        except ValueError as exc:
+            return _bad_request(str(exc))
+        session.activity()
+        return state
+
+    @app.post("/api/label/next", response_model=None)
+    async def label_next(request: Request) -> Response | dict[str, Any]:
+        index = _index((await _body(request)).get("index"))
+        if index is None:
+            return _bad_request("Expected an image index.")
+        try:
+            state = controller.next(index)
+        except ValueError as exc:
+            return _bad_request(str(exc))
+        session.activity()
+        return state
+
+    @app.post("/api/label/back", response_model=None)
+    async def label_back(request: Request) -> Response | dict[str, Any]:
+        index = _index((await _body(request)).get("index"))
+        if index is None:
+            return _bad_request("Expected an image index.")
+        try:
+            state = controller.back(index)
+        except ValueError as exc:
+            return _bad_request(str(exc))
+        session.activity()
+        return state
+
+    @app.post("/api/label/auto-advance", response_model=None)
+    async def label_auto_advance(request: Request) -> Response | dict[str, Any]:
+        enabled = (await _body(request)).get("enabled")
+        if not isinstance(enabled, bool):
+            return _bad_request("Expected enabled: true or false.")
+        state = controller.set_auto_advance(enabled)
+        session.activity()
+        return state
+
+    @app.post("/api/label/finish")
+    async def label_finish(request: Request) -> dict[str, Any]:
+        confirmed = (await _body(request)).get("confirmed") is True
+        result = controller.finish(confirmed=confirmed)
+        if result["status"] == "finished":
+            # The terminal takes over: it copies the labels into dataset/.
+            session.finish()
+        return result

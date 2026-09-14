@@ -194,3 +194,129 @@ class TestFailures:
         assert response.json()["ended"] is True
         assert isinstance(session.error, OSError)
         assert session.done
+
+
+# ------------------------------------------------------------------ labeling
+
+
+class TestLabelingRoutes:
+    """The labeling page's routes over a real controller and session file.
+
+    Covers plan § *Labeling UI* → *Session timer triggers*: assignment, Back or
+    Next, and toggling auto-advance reset the timer; reading state does not.
+    """
+
+    @pytest.fixture
+    def labeling(self, tmp_path: Path, clock: FakeClock) -> tuple[TestClient, object]:
+        from optica.input.sessions import LabelingSession, SourceType
+        from optica.server.labeling import LabelingController
+
+        folder = tmp_path / "images"
+        folder.mkdir()
+        images = []
+        for i in range(12):
+            path = folder / f"IMG_{i:04d}.jpg"
+            path.write_bytes(bytes([i]) * 8)
+            images.append(path.resolve())
+        session_file = LabelingSession.new(
+            tmp_path / "home", folder, SourceType.FOLDER, ["cat", "dog"]
+        )
+        controller = LabelingController(session_file, images)
+        browser = BrowserSession(controller, IdleTimer(60, clock=clock), token="t" * 32)
+        browser.port = PORT
+        client = TestClient(create_app(browser), base_url=BASE)
+        assert (
+            client.get(f"/?token={browser.token}", follow_redirects=False).status_code
+            == 303
+        )
+        return client, browser
+
+    def test_the_page_is_served(self, labeling):
+        client, _ = labeling
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "<title>Optica — Label</title>" in response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert client.get("/static/labeling.js").status_code == 200
+
+    def test_state_is_not_activity(self, labeling, clock):
+        client, _ = labeling
+        clock.now += 40 * 60
+        body = client.get("/api/label/state").json()
+        assert body["position"] == "1 of 12"
+        assert body["widget"] == "radio"
+        assert client.get("/api/heartbeat").json()["remaining_seconds"] == 20 * 60
+
+    @pytest.mark.parametrize(
+        ("path", "payload"),
+        [
+            ("/api/label/assign", {"index": 0, "class": "cat"}),
+            ("/api/label/next", {"index": 0}),
+            ("/api/label/back", {"index": 1}),
+            ("/api/label/auto-advance", {"enabled": False}),
+        ],
+    )
+    def test_each_decision_is_activity(self, labeling, clock, path, payload):
+        client, _ = labeling
+        clock.now += 40 * 60
+        assert client.post(path, json=payload).status_code == 200
+        assert client.get("/api/heartbeat").json()["remaining_seconds"] == 3600
+
+    def test_assign_is_written_to_the_session_file_before_it_returns(self, labeling):
+        import json
+
+        client, browser = labeling
+        body = client.post("/api/label/assign", json={"index": 0, "class": "dog"}).json()
+        assert body["index"] == 1
+        stored = json.loads(browser.controller.session.path.read_text(encoding="utf-8"))
+        assert list(stored["entries"].values()) == [{"state": "labeled", "class": "dog"}]
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"index": 0},
+            {"class": "cat"},
+            {"index": "0", "class": "cat"},
+            {"index": True, "class": "cat"},
+            {"index": 0, "class": "bird"},
+            {"index": 99, "class": "cat"},
+        ],
+    )
+    def test_a_malformed_assignment_is_a_400_and_changes_nothing(self, labeling, payload):
+        client, browser = labeling
+        response = client.post("/api/label/assign", json=payload)
+        assert response.status_code == 400
+        assert browser.controller.session.entries == {}
+        assert not browser.done
+
+    def test_a_body_that_is_not_json_is_a_400(self, labeling):
+        client, _ = labeling
+        response = client.post(
+            "/api/label/next", content=b"index=0", headers={"content-type": "text/plain"}
+        )
+        assert response.status_code == 400
+
+    def test_finish_while_gated_is_blocked_and_the_session_continues(self, labeling):
+        client, browser = labeling
+        body = client.post("/api/label/finish", json={"confirmed": True}).json()
+        assert body["status"] == "blocked"
+        assert body["hint"] == (
+            "Every class needs at least 5 images. cat needs 5 more, dog needs 5 more."
+        )
+        assert not browser.done
+
+    def test_finish_asks_then_hands_back_to_the_terminal(self, labeling):
+        client, browser = labeling
+        for i in range(10):
+            client.post(
+                "/api/label/assign", json={"index": i, "class": "cat" if i < 5 else "dog"}
+            )
+        first = client.post("/api/label/finish", json={"confirmed": False}).json()
+        assert first["status"] == "confirm"
+        assert first["message"] == (
+            "2 images will not be included: 0 skipped, 2 not yet reached."
+        )
+        assert not browser.done
+        second = client.post("/api/label/finish", json={"confirmed": True}).json()
+        assert second["status"] == "finished"
+        assert browser.done
