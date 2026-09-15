@@ -7,7 +7,10 @@ keys.
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -15,16 +18,53 @@ import pytest
 from optica.utils import system
 
 
+def _torch_loaded_after(body: str, tmp_path: Path) -> list[str]:
+    """Run ``body`` in a fresh interpreter where torch is present, and report it.
+
+    Constructed rather than inherited: a recording fake ``torch`` package is put
+    first on ``sys.path``, so the check means the same on a machine with real
+    torch, one without it, and inside a pytest process that other tests have
+    already imported torch into — the shared ``sys.modules`` the first version of
+    these tests read.
+    """
+    fake = tmp_path / "fake" / "torch"
+    fake.mkdir(parents=True)
+    (fake / "__init__.py").write_text("", encoding="utf-8")
+    script = textwrap.dedent(
+        f"""
+        import importlib.util, json, sys
+        sys.path.insert(0, {str(fake.parent)!r})
+        spec = importlib.util.find_spec("torch")
+        assert spec is not None and spec.origin.startswith({str(fake.parent)!r}), spec
+        """
+    ) + textwrap.dedent(body) + textwrap.dedent(
+        """
+        print(json.dumps(sorted(m for m in sys.modules if m.split(".")[0] == "torch")))
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    loaded: list[str] = json.loads(result.stdout.strip().splitlines()[-1])
+    return loaded
+
+
 class TestNoTorch:
     """Detection must work before ``optica setup`` has installed anything."""
 
-    def test_importing_the_module_does_not_import_torch(self):
-        assert "torch" not in sys.modules
+    def test_importing_the_module_does_not_import_torch(self, tmp_path):
+        assert _torch_loaded_after("import optica.utils.system\n", tmp_path) == []
 
-    def test_detecting_does_not_import_torch(self, monkeypatch):
-        monkeypatch.setattr(system, "_nvidia_smi_query", lambda: None)
+    @pytest.mark.parametrize("smi", [None, "NVIDIA GeForce RTX 3080, 550.00"])
+    def test_detecting_does_not_import_torch(self, tmp_path, smi):
+        body = f"""
+        from optica.utils import system
+        system._nvidia_smi_query = lambda: {smi!r}
+        system._driver_cuda_version = lambda: "12.4"
         system.detect_gpu()
-        assert "torch" not in sys.modules
+        """
+        assert _torch_loaded_after(body, tmp_path) == []
 
 
 class TestGPUDetection:
