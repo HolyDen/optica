@@ -27,6 +27,13 @@ its size and SHA-256 against :data:`PINNED_WEIGHTS` (recorded in
 ``notes/verified.md``), deletes and re-downloads a bad copy once, and only then
 lets open-clip build the model from the cache it has just verified.
 
+**QuickGELU.** The ``openai`` weights were trained with QuickGELU, and
+open-clip's ``ViT-B-32`` config uses standard GELU. Given the tag, open-clip
+3.3.0 *warns* about the mismatch and builds the GELU model anyway, so the plan's
+call is made with ``force_quick_gelu=True`` (:data:`MODEL_KWARGS`). The model,
+the weights and the template are unchanged; this is what loads those weights
+into the architecture they belong to.
+
 **Nothing here imports torch or open_clip at module level.** The pure half —
 prompts, over-fetch arithmetic, survivor selection, weights verification — is
 tested in CI; the half that needs the extra is imported lazily and raises
@@ -51,6 +58,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CLIP_MODEL",
     "CLIP_PRETRAINED",
+    "MODEL_KWARGS",
     "OVERFETCH_FACTOR",
     "PINNED_WEIGHTS",
     "PROMPT_TEMPLATE",
@@ -75,6 +83,9 @@ PROMPT_TEMPLATE: Final = "a photo of a {}"
 OVERFETCH_FACTOR: Final = 2
 """Hardcoded, not a config key: tuning it needs the threshold's score
 distribution."""
+
+MODEL_KWARGS: Final[dict[str, Any]] = {"force_quick_gelu": True}
+"""Passed to ``create_model_and_transforms`` beside the plan's two arguments."""
 
 WEIGHTS_FILENAME: Final = "open_clip_model.safetensors"
 _SCORE_BATCH: Final = 32
@@ -449,11 +460,13 @@ def load_clip(
     path = ensure_weights(download, pinned, report=report)
     device = device if device is not None else select_device()
     try:
-        # The plan's call, with the tag rather than a file path: the tag carries
-        # the openai configuration (QuickGELU, mean/std, interpolation) that a
-        # bare path would silently drop. It resolves to the file verified above.
+        # The plan's call, with the tag rather than a file path: the tag supplies
+        # the openai preprocessing (mean/std, interpolation, resize mode) and
+        # resolves to the file verified above. It does NOT apply the tag's
+        # QuickGELU — open-clip 3.3.0 only warns about the mismatch — hence
+        # MODEL_KWARGS (notes/verified.md, pass 4).
         model, _, preprocess = open_clip.create_model_and_transforms(
-            CLIP_MODEL, pretrained=CLIP_PRETRAINED, device=device
+            CLIP_MODEL, pretrained=CLIP_PRETRAINED, device=device, **MODEL_KWARGS
         )
         tokenizer = open_clip.get_tokenizer(CLIP_MODEL)
     except Exception as exc:

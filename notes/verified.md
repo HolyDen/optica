@@ -1264,3 +1264,109 @@ were both created as `cat` without an error.
 a space") is not cosmetic. Without it `-c cat,cat.` passes rule 2 (the two names
 differ) and writes both classes into one folder on Windows.
 `class_name_problem()` in `src/optica/input/classes.py`.
+
+### open-clip-torch 3.3.0 — metadata, and where `ViT-B-32`/`openai` weights come from
+**Date:** 2026-09-15
+**How:**
+```
+pip download open-clip-torch --no-deps -d <scratch>        # wheel, unpacked
+grep Requires-Dist open_clip_torch-3.3.0.dist-info/METADATA
+open_clip/pretrained.py  : _VITB32["openai"], download_pretrained(), download_pretrained_from_url()
+pip install --dry-run <wheel>                               # in .venv
+python -c "import open_clip; print(open_clip.get_pretrained_cfg('ViT-B-32','openai'))"
+```
+**Result:**
+- Latest on PyPI is still **3.3.0** (the plan's version table agrees). `Requires-Python >=3.9`.
+  Unconditional: `torch>=2.0`, `torchvision`, `regex`, `ftfy`, `tqdm`,
+  `huggingface-hub`, `safetensors`, `timm>=1.0.17`.
+- Dry run into `.venv` would install exactly: `ftfy-6.3.1`, `open_clip_torch-3.3.0`,
+  `regex-2026.9.10`, `wcwidth-0.8.3`. torch 2.14.0+cu130 untouched (re-checked after).
+- `get_pretrained_cfg('ViT-B-32','openai')` = `url` openaipublic `.../40d36571.../ViT-B-32.pt`,
+  `hf_hub` `timm/vit_base_patch32_clip_224.openai/`, mean `(0.48145466, 0.4578275, 0.40821073)`,
+  std `(0.26862954, 0.26130258, 0.27577711)`, `interpolation` bicubic,
+  `resize_mode` shortest, **`quick_gelu` True**.
+- `download_pretrained` prefers the Hub whenever `huggingface_hub` imports — always,
+  since it is a hard dependency. The Hub route asks for `open_clip_model.safetensors`
+  first (`_get_safe_alternatives("open_clip_pytorch_model.bin")`). **Only the URL
+  route checks a SHA-256**; the Hub route and a cached Hub file are not hashed.
+
+**Consequence:** `input/clip.py` verifies the file itself (next entry).
+
+### The CLIP weights file: size and SHA-256
+**Date:** 2026-09-15
+**How:** `HfApi().model_info('timm/vit_base_patch32_clip_224.openai', files_metadata=True)`;
+then, after the live download, `ls -la <HF cache>/.../snapshots/*/`.
+**Result:** repo revision `a6f597a30f7b82c51704746581f9a4e41421e878`, public, not gated,
+licence apache-2.0.
+
+| File | Size (bytes) | LFS SHA-256 |
+|---|---|---|
+| `open_clip_model.safetensors` | 605,143,284 | `e6d1bd7789aa45192b3bf90570a789b478bae1b74ebcce7eddd908e83a2b7c31` |
+| `open_clip_pytorch_model.bin` | 605,225,782 | `9ecdaef325b20e7283dc6a32f92aa638d100899e4f084c2462d3832eeea0b26e` |
+| `pytorch_model.bin` | 605,221,285 | `bd41409c7f2bb021cd96142f3a490caa78494cf4ec7f245d916bc33641a80d09` |
+
+The downloaded safetensors file on disk is 605,143,284 bytes — matches. The plan's
+"~600MB" is right (605 MB decimal, 577 MiB).
+
+**Consequence:** `PINNED_WEIGHTS` in `input/clip.py`.
+
+### The Hub cache on Windows without Developer Mode keeps no blob
+**Date:** 2026-09-15
+**How:** `HF_HUB_CACHE=.smoke/hfprobe`, `hf_hub_download(repo, 'open_clip_config.json')`, then `rglob`.
+**Result:** the file sits directly at `snapshots/<rev>/open_clip_config.json`,
+`is_symlink() == False`; `blobs/` is empty. huggingface_hub 1.31.0 also warns
+"To support symlinks on Windows..." on each download.
+
+**Consequence:** the expected hash cannot be read from a blob name on this
+platform, so it is pinned. `load_clip` sets `HF_HUB_DISABLE_SYMLINKS_WARNING=1`.
+
+### open-clip 3.3.0 does not apply the `openai` tag's QuickGELU — measured
+**Date:** 2026-09-15
+**How:** the first live `optica fetch --mode clip` printed
+`UserWarning: QuickGELU mismatch between final model config (quick_gelu=False) and pretrained tag 'openai' (quick_gelu=True)`.
+Source: `open_clip/factory.py` around l.430–452 — `force_quick_gelu` is the only
+thing that sets it; the tag's value is compared only in order to warn. Then
+`scratchpad/gelu_compare.py`: 120 Open Images candidates fetched in curate mode
+(60 Cat, 60 Dog, human-verified labels), each scored on CUDA against
+`a photo of a cat` and `a photo of a dog` by both builds.
+**Result:**
+
+| Build | class | n | own mean | own min | own max | own ≥ 0.25 | other mean | other ≥ 0.25 | own prompt best |
+|---|---|---|---|---|---|---|---|---|---|
+| plan's bare call (GELU) | cat | 60 | 0.2528 | 0.1825 | 0.2889 | 36 | 0.2147 | 2 | 54 |
+| plan's bare call (GELU) | dog | 60 | 0.2468 | 0.1804 | 0.2850 | 32 | 0.1971 | 0 | 58 |
+| `force_quick_gelu=True` | cat | 60 | 0.2587 | 0.1801 | 0.3059 | 45 | 0.2206 | 4 | 54 |
+| `force_quick_gelu=True` | dog | 60 | 0.2500 | 0.1737 | 0.2915 | 31 | 0.2030 | 0 | 59 |
+
+Per-image own-prompt change (QuickGELU minus GELU): cat mean +0.0060
+(−0.0095 to +0.0220), **13 of 60 cross 0.25**; dog mean +0.0031 (−0.0096 to
++0.0213), **9 of 60 cross 0.25**. Only the QuickGELU build raised no warning.
+
+**Consequence:** `MODEL_KWARGS = {"force_quick_gelu": True}`. Plan change proposed
+in `notes/build-log.md`. A second observation, not acted on: on verified labels
+the correct-class score averages about 0.25 in both builds — the plan's threshold
+sits inside the true-positive distribution (build log).
+
+### Live `optica fetch --mode clip`, three runs
+**Date:** 2026-09-15
+**How:** `.smoke/pass4-live/`, private `HOME`/`USERPROFILE`, real HF cache,
+`optica fetch -c cat,dog --mode clip --yes ...`. Logs: `clip/run1.log`,
+`clip/run2.log`, `clip2/run3.log`.
+**Result:**
+
+| Run | Code | Staging before | -i | Scored cat / dog | ≥ 0.25 cat / dog | Kept cat / dog | Wall |
+|---|---|---|---|---|---|---|---|
+| 1 | GELU (pre-fix); first use: 605 MB download + label index | empty | 20 | 40 / 40 | 23 / 22 | 20 / 20 | 3m10s |
+| 2 | QuickGELU, `--overwrite` | 60 / 60, left by the comparison fetch (`--clear-staging` refuses unattended, correctly) | 20 | 60 / 60 | 45 / 31 | 20 / 20 | 8.5s |
+| 3 | QuickGELU, fresh home, label cache copied in | empty | 25 | 50 / 50 | 38 / 27 | 25 / 25 | 12.2s |
+
+Each reconciles. Run 3: cat 38 passed + 12 below = 50 scored, dog 27 + 23 = 50;
+on disk 25 + 25 = 50, the success line's figure. Run 2's 45 / 31 equal the
+comparison table's QuickGELU row on the same 120 files — the check that the CLI
+builds the same model as the script. After runs 1 and 3 the class staging was
+gone and no `.dataset.partial` remained. Exit 0 on all three, on `cuda`. Run 1's
+first-use notice named the size and the cache path before downloading.
+
+**Consequence:** clip mode is exercised end to end against Open Images and the
+real model. The grouped path's scoring is exercised only by the fake-scorer
+tests.

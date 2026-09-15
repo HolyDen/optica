@@ -2934,3 +2934,156 @@ The torch-less row is what the old tests could not do: in CI a guarded import
 would have passed both of them silently. The scratch venv was
 `python3.11 -m venv` in the session scratchpad plus
 `pip install -e "C:/dev/optica[test]"`; it touched nothing in the repo.
+
+### `open-clip-torch` installed into `.venv`
+**Pass:** 4, checkpoint 1   **Date:** 2026-09-15   **Where:** `.venv`
+**Found:** the human installed the torch stack (torch, torchvision, timm,
+scikit-learn) but not `optica[clip]`'s `open-clip-torch`, which checkpoint 1's
+`input/clip.py` needs to run at all.
+**Decided:** installed `open_clip_torch-3.3.0` from its PyPI wheel after a
+`pip install --dry-run` showed it would add only `ftfy 6.3.1`, `regex
+2026.9.10`, `wcwidth 0.8.3` and itself — no change to torch 2.14.0+cu130,
+torchvision 0.29.0+cu130 or timm 1.0.29, all re-checked after the install.
+**Why not a stop:** it is the extra the plan names for this module, not the
+torch stack the pass instruction reserved for the human, and it is reversible
+with one `pip uninstall`. **Reversible?** Yes.
+
+### CLIP Adapter — what the plan leaves open, and what was assumed
+**Pass:** 4, checkpoint 1   **Date:** 2026-09-15   **Where:** `src/optica/input/clip.py`, `src/optica/cli/classify.py`
+1. **Which survivors clip mode keeps.** The plan keeps "up to
+   `images_per_class`" of what passes. Kept: the highest-scoring, ties by path.
+2. **Pass is `score >= clip_threshold`** — the plan discards "whatever scores
+   below". Boundary pinned by a test.
+3. **A grouped class's score is its best sub-term.** The plan says each image
+   is scored against all sub-terms and keeps its label; `max` is the only
+   reading under which one matching sub-term is enough.
+4. **Clip mode's staging is consumed.** It fetches into staging (so an
+   interrupted clip fetch resumes like any other), scores, writes survivors to a
+   hidden sibling of `dataset/`, commits in one move, and only then deletes that
+   run's class staging. A failure or interrupt before the commit leaves the old
+   dataset untouched and the candidates staged.
+5. **An empty class after filtering still gets its folder** in `dataset/`, so
+   training's floor check names it rather than the class silently vanishing.
+6. **The destination check is the first thing `_fetch_body` does under
+   `--mode clip`** — before the client, the label index, any prompt for work.
+   `fetch` had a `--dataset` flag and an `--overwrite` flag already.
+7. **CLIP loads before the first image is fetched,** not after — the 605 MB
+   weights download and the verification happen before any quota is spent.
+   The plan's "check before any action" principle, applied to a load.
+8. **The grouped path under curate is not over-fetched.** The plan's × 2 is
+   stated for clip mode; under curate a person selects afterwards. Rejected
+   images are deleted from staging (auto-fetched, per the deletion rule), and
+   the count is reported per class.
+9. **Weights verification is Optica's, against a pinned size + SHA-256.**
+   open-clip resolves `openai` through the Hugging Face Hub (hard dependency),
+   and neither it nor `hf_hub_download` hashes a cached file. On Windows without
+   Developer Mode the Hub cache keeps no content-addressed blob, so the hash
+   cannot be read from the cache layout either (`notes/verified.md`). Repair is
+   delete + one forced re-download; still wrong → `OpticaCLIPLoadError` naming
+   the path. A slow test fails if an open-clip upgrade changes the file the tag
+   resolves to.
+10. **Fetch More still refuses grouped classes.** Lifting it needs a per-sub-term
+    top-up target (`fetch_class` takes one `per_query`, and the sidecar's
+    per-query `delivered` counts include images CLIP later removed) and the model
+    loaded inside the curation server's worker thread. The refusal text no longer
+    claims CLIP filtering is absent from the build. → **pass 5 or the human.**
+11. **Device selection lives in `clip.py` for now** (`select_device`: CUDA, then
+    MPS, then CPU). Checkpoint 2's training engine needs the same choice; it
+    decides whether to share it.
+**Reversible?** Each is local to one function.
+
+### The MPS path is written and never run
+**Pass:** 4   **Date:** 2026-09-15   **Where:** `src/optica/input/clip.py:select_device` (and, from checkpoint 2, `training/`)
+This machine has an NVIDIA GPU (CUDA 13.0) and no Apple silicon. The MPS branch
+is exercised only by a test that monkeypatches `torch.backends.mps.is_available`
+to True and asserts the device *type* chosen — no tensor has ever been placed on
+an MPS device by this build. Marked `TODO(test)`. **Do not read the passing
+`TestDevice::test_mps_when_only_mps_is_available` as MPS coverage.** The CUDA
+path is genuinely exercised: the live clip fetch below scored on
+`torch.device("cuda")`.
+
+### Two more tests read the shared `sys.modules`, and pass 4 is what broke them
+**Pass:** 4, checkpoint 1   **Date:** 2026-09-15   **Where:** `tests/unit/utils/test_system.py::TestNoTorch`
+**Found:** `assert "torch" not in sys.modules`, twice, in the pytest process.
+Passed while nothing in the suite imported torch; failed as soon as
+`tests/unit/input/test_clip.py`'s slow tests did, earlier in the same run.
+Seventh and eighth instances of the ambient-fact defect.
+**Fixed:** each now runs in a fresh interpreter with a recording fake `torch`
+first on `sys.path` (asserted to be the one found), and reports the torch
+modules loaded. The detection test is parametrized over both `nvidia-smi`
+branches. **Bite:** a guarded top-level `import torch` in `utils/system.py` fails
+all three, and a guarded lazy one in `detect_gpu` fails the two detection cases,
+in `.venv` and in the torch-less scratch venv alike. Restored: 3 pass.
+
+### My own new CLI tests inherited the clip extra — caught by the torch-less venv
+**Pass:** 4, checkpoint 1   **Date:** 2026-09-15   **Where:** `tests/unit/cli/test_fetch_command.py::TestClipMode`, `TestGroupedUnderCurate`
+**Found:** all 29 fetch-command tests passed in `.venv` on the first run. In the
+torch-less scratch venv — CI's shape — the 8 new ones failed: `fetch --mode clip`
+checks `clip_available()` at entry, which is True in `.venv` only because
+open-clip is installed there. Exactly the defect the standing rule names; it
+would have turned CI red on all three runners.
+**Fixed:** a `clip_installed` fixture sets `clip_available` to True, and the
+`scorer` fixture depends on it. Now 1246 pass / 0 fail in the torch-less venv
+with `-m "not slow"`, and 1316 pass in `.venv` with slow included.
+**Rule applied going forward:** every pass-4 test suite is run in both venvs
+before commit.
+
+### Proposed plan change — the CLIP load call needs `force_quick_gelu=True`
+**Pass:** 4, checkpoint 1   **Date:** 2026-09-15   **Where:** plan § "CLIP Adapter (clip mode)", the code line under "hardcoded in V1" (l.848); `src/optica/input/clip.py:MODEL_KWARGS`
+**Found:** the plan's line
+`open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai')` builds
+ViT-B-32 with standard GELU in open-clip 3.3.0 and loads the QuickGELU-trained
+openai weights into it, raising only a `UserWarning`. Measured on 120 verified
+Open Images images: 22 of 120 own-class scores cross `clip_threshold = 0.25`
+between the two builds (`notes/verified.md`). The plan says the threshold is
+calibrated for "this model, these weights" — the bare call is not quite that
+model.
+**Done in code:** the call is made with `force_quick_gelu=True`. Model name,
+weights tag and template are unchanged. My earlier docstring claim that the tag
+"carries QuickGELU" was wrong, and the slow test I wrote for it checked the tag's
+config rather than the model built; both corrected. A slow test now asserts the
+built model contains `QuickGELU` modules; a CI-safe test asserts `load_clip`
+passes the kwarg (removing it fails that test); a slow test fails if open-clip
+ever starts applying the tag's activation itself.
+**Proposed wording** (for the human; `spec/` untouched):
+```python
+model, _, preprocess = open_clip.create_model_and_transforms(
+    'ViT-B-32', pretrained='openai', force_quick_gelu=True)
+```
+followed by: "*`force_quick_gelu=True` is part of the model: the openai weights
+were trained with QuickGELU, and open-clip does not apply that from the tag — it
+warns and builds GELU.*"
+**Why not a hard stop:** checkpoint 1 ends here, so the report is the stop. The
+code follows the plan's stated intent (this model, these weights), and reverting
+it is one kwarg.
+
+### Finding for the human — 0.25 sits inside the true-positive score range
+**Pass:** 4, checkpoint 1   **Date:** 2026-09-15   **Where:** plan § "CLIP Adapter", Implementation Note 6
+Not a code change. On Open Images' human-verified Cat and Dog images, the
+correct-class cosine score (QuickGELU build) averaged 0.2587 and 0.2500, ranging
+0.1801–0.3059 and 0.1737–0.2915. At 0.25, clip mode discarded 15 of 60 genuine
+cats and 29 of 60 genuine dogs, and 4 of 60 cats also scored ≥ 0.25 against "a
+photo of a dog". The 2× over-fetch still filled `images_per_class` in both
+post-fix live runs. Two classes from one source are not a calibration study;
+recorded so that a later recalibration starts from numbers.
+
+### Open — the Hub's unauthenticated-request warning prints twice on every CLIP run
+**Pass:** 4, checkpoint 1   **Date:** 2026-09-15   **Where:** `input/clip.py:load_clip` (the HEAD request inside `hf_hub_download`)
+Every live run, cached or not, printed "You are sending unauthenticated requests
+to the HF Hub..." once through `warnings` and once through stdlib logging. Not
+actionable for most users; noise on stderr. **Left for checkpoint 2**, because
+timm's pretrained weights come from the same Hub and one decision should cover
+both. The QuickGELU warning is gone with the fix.
+
+### Checkpoint 1 — state
+**Pass:** 4   **Date:** 2026-09-15
+**Built:** `input/clip.py`; `fetch --mode clip` and the grouped path under curate
+in `cli/classify.py`; Fetch More's grouped refusal re-worded in `input/curation.py`.
+**Tests:** `.venv`, slow included: 1320 passed, 14 skipped. Torch-less scratch venv (CI's
+shape), `-m "not slow"`: 1248 passed, 28 skipped, 10 deselected. Ruff and mypy clean in both. Mutation checks:
+12 of 12 bite (11 in `scratchpad/mutate_clip.py` plus dropping `MODEL_KWARGS`).
+**Live:** three `fetch --mode clip` runs on CUDA, table in `notes/verified.md`.
+**Not run live:** the grouped path's scoring (fake scorer only); the weights
+repair path (constructed files only — no real corrupt download was staged);
+MPS.
+**Next:** checkpoint 2, `training/`.

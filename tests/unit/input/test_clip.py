@@ -207,6 +207,88 @@ class TestWeights:
         assert clip.sha256_of(target) == hashlib.sha256(GOOD).hexdigest()
 
 
+class TestLoadWiring:
+    """``load_clip`` against a recording open_clip and Hub — no torch, no network."""
+
+    def test_the_plans_call_plus_quick_gelu_on_a_verified_file(
+        self, tmp_path, monkeypatch
+    ):
+        import types
+
+        calls: dict[str, object] = {}
+        weights = tmp_path / clip.WEIGHTS_FILENAME
+        weights.write_bytes(GOOD)
+
+        class Model:
+            def eval(self):
+                calls["eval"] = True
+
+        fake_clip = types.ModuleType("open_clip")
+        fake_clip.get_pretrained_cfg = lambda model, tag: {  # type: ignore[attr-defined]
+            "hf_hub": "timm/vit_base_patch32_clip_224.openai/"
+        }
+
+        def create(model_name, **kwargs):
+            calls["create"] = (model_name, kwargs)
+            return Model(), None, "preprocess"
+
+        fake_clip.create_model_and_transforms = create  # type: ignore[attr-defined]
+        fake_clip.get_tokenizer = lambda name: "tokenizer"  # type: ignore[attr-defined]
+
+        fake_hub = types.ModuleType("huggingface_hub")
+        fake_hub.try_to_load_from_cache = lambda repo, name: str(weights)  # type: ignore[attr-defined]
+
+        def download(repo, name, force_download=False):
+            calls["download"] = (repo, name, force_download)
+            return str(weights)
+
+        fake_hub.hf_hub_download = download  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "open_clip", fake_clip)
+        monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+        monkeypatch.setitem(clip.PINNED_WEIGHTS, clip.WEIGHTS_FILENAME, _pinned())
+
+        reports: list[str] = []
+        scorer = clip.load_clip(report=reports.append, device="cpu")  # type: ignore[arg-type, unused-ignore]
+
+        assert calls["download"] == (
+            "timm/vit_base_patch32_clip_224.openai",
+            clip.WEIGHTS_FILENAME,
+            False,
+        )
+        assert calls["create"] == (
+            "ViT-B-32",
+            {"pretrained": "openai", "device": "cpu", "force_quick_gelu": True},
+        )
+        assert calls["eval"] is True
+        assert str(scorer.tokenizer) == "tokenizer"
+        assert reports == []  # cached: no first-use notice
+
+    def test_a_first_use_download_is_announced_with_its_size_and_cache(
+        self, tmp_path, monkeypatch
+    ):
+        import types
+
+        fake_clip = types.ModuleType("open_clip")
+        fake_clip.get_pretrained_cfg = lambda model, tag: {"hf_hub": "org/repo/"}  # type: ignore[attr-defined]
+        fake_hub = types.ModuleType("huggingface_hub")
+        fake_hub.try_to_load_from_cache = lambda repo, name: None  # type: ignore[attr-defined]
+        fake_hub.constants = types.SimpleNamespace(HF_HUB_CACHE="/cache/hub")  # type: ignore[attr-defined]
+
+        def offline(repo, name, force_download=False):
+            raise OSError("offline")
+
+        fake_hub.hf_hub_download = offline  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "open_clip", fake_clip)
+        monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+        reports: list[str] = []
+        with pytest.raises(OpticaCLIPLoadError):
+            clip.load_clip(report=reports.append, device="cpu")  # type: ignore[arg-type, unused-ignore]
+        [notice] = reports
+        assert "605 MB" in notice
+        assert "first use only" in notice
+        assert "/cache/hub" in notice
+
+
 class TestMissingExtra:
     def test_no_open_clip_is_the_capability_named_error(self, monkeypatch):
         # Constructed: a None entry makes `import open_clip` raise ImportError,
@@ -299,8 +381,30 @@ class TestRealOpenClip:
         cfg = open_clip.get_pretrained_cfg(clip.CLIP_MODEL, clip.CLIP_PRETRAINED)
         assert cfg["hf_hub"].strip("/") == "timm/vit_base_patch32_clip_224.openai"
         assert clip.WEIGHTS_FILENAME in list(_get_safe_alternatives(HF_WEIGHTS_NAME))
-        # The tag carries configuration a bare file path would drop.
+
+    @staticmethod
+    def _quick_gelu_modules(**kwargs: object) -> int:
+        import open_clip
+        from open_clip.transformer import QuickGELU
+
+        model = open_clip.create_model(clip.CLIP_MODEL, pretrained=None, **kwargs)
+        return sum(isinstance(module, QuickGELU) for module in model.modules())
+
+    def test_the_model_is_built_with_the_weights_activation(self):
+        # The openai tag was trained with QuickGELU. open-clip 3.3.0 does not
+        # apply that from the tag — it warns — so MODEL_KWARGS must, and the
+        # model it builds must actually contain QuickGELU.
+        import open_clip
+
+        cfg = open_clip.get_pretrained_cfg(clip.CLIP_MODEL, clip.CLIP_PRETRAINED)
         assert cfg["quick_gelu"] is True
+        assert clip.MODEL_KWARGS.get("force_quick_gelu") is True
+        assert self._quick_gelu_modules(**clip.MODEL_KWARGS) > 0
+
+    def test_the_plans_bare_call_would_build_gelu(self):
+        # Why MODEL_KWARGS exists. If open-clip starts applying the tag's
+        # activation itself, this fails and the kwarg becomes redundant (harmless).
+        assert self._quick_gelu_modules() == 0
 
     def test_a_random_weight_vit_b_32_scores_within_cosine_range(self, tmp_path):
         import open_clip
