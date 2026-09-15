@@ -1,8 +1,11 @@
 """Shared fixtures.
 
-Synthetic ``pretrained=False`` model fixtures arrive with pass 4, when
-``training/`` is built; CI never installs the torch stack, so anything importing
-torch carries ``@pytest.mark.slow`` and runs locally only.
+Synthetic ``pretrained=False`` fixtures arrived with pass 4: ``image_dataset``
+writes a small ``ImageFolder``-shaped dataset with Pillow alone, and
+``timm_model`` builds a backbone with ``pretrained=False`` — no weights are ever
+downloaded, and the network guard below would fail a test that tried. CI never
+installs the torch stack, so anything using ``timm_model`` carries
+``@pytest.mark.slow`` and runs locally only.
 
 What lives here in pass 1 is the isolation every later pass needs: a home
 directory and a working directory that are never the developer's own, since
@@ -12,8 +15,9 @@ Optica writes ``~/.optica/`` and ``./dataset/``.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -120,3 +124,43 @@ def _no_real_browser(monkeypatch: pytest.MonkeyPatch) -> None:
         raise RuntimeError(f"test attempted to open a real browser: {url}")
 
     monkeypatch.setattr(webbrowser, "open", refuse)
+
+
+@pytest.fixture
+def image_dataset(tmp_path: Path) -> Callable[..., Path]:
+    """Write ``root/<class>/<n>.png`` for each class. No torch needed.
+
+    Each image is distinct (so deduplication keeps it) and each class has its
+    own colour family (so a model can learn the split in an epoch or two).
+    """
+    from PIL import Image
+
+    palette = [(220, 40, 40), (40, 40, 220), (40, 200, 40), (200, 200, 40)]
+
+    def make(counts: dict[str, int], root: Path | None = None, size: int = 64) -> Path:
+        root = root or tmp_path / "dataset"
+        for index, (name, count) in enumerate(counts.items()):
+            folder = root / name
+            folder.mkdir(parents=True, exist_ok=True)
+            base = palette[index % len(palette)]
+            for i in range(count):
+                shade = (i * 7) % 30
+                colour = tuple(max(0, min(255, c + shade)) for c in base)
+                image = Image.new("RGB", (size, size), colour)
+                image.putpixel((i % size, (i * 3) % size), (255 - shade, shade, 128))
+                image.save(folder / f"{i:04d}.png")
+        return root
+
+    return make
+
+
+@pytest.fixture
+def timm_model() -> Callable[..., Any]:
+    """Build a timm backbone with ``pretrained=False``. Slow tests only."""
+
+    def make(name: str, **kwargs: Any) -> Any:
+        import timm
+
+        return timm.create_model(name, pretrained=False, **kwargs)
+
+    return make
