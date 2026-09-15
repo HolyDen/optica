@@ -1531,3 +1531,19 @@ keys `state_dict` (360 tensors, `classifier.weight`/`classifier.bias`) and
 `optimizer_state`. Both log copies byte-identical.
 **Consequence:** not the checkpoint 4 milestone — a smoke run, before the tests
 were written. It found the symlink-warning ordering above.
+
+### A `pretrained=False` backbone is nearly input-blind
+**Date:** 2026-09-15
+**How:** `.venv`; `torch.manual_seed(0)`; `timm.create_model("efficientnet_b0", pretrained=False, num_classes=2).eval()`;
+two random inputs `rand(1,3,224,224)` and `rand(...)*3 - 1.5`; then the same model
+built via `create_model(pretrained=False)` + `configure_head` (i.e.
+`reset_classifier`), classifier weights scaled ×1e4, fed one random image through
+Optica's evaluation transform, a no-`Normalize` pipeline and a bilinear pipeline.
+**Result:** unscaled logits `[1.60e-4, -8.60e-5]` vs `[-2.46e-5, 6.87e-5]` — max
+difference 1.85e-4; softmax 0.5001/0.4999 vs 0.5000/0.5000. Scaled, head from
+`create_model(num_classes=2)`: logit shifts no-Normalize 2.006, bilinear 0.409,
+resize-235 0.850. Scaled, head from `reset_classifier`: no-Normalize 0.0097,
+bilinear 0.0045. Normal-init heads std 1 / std 100: bilinear 0.0000 / 0.0005.
+**Consequence:** a test comparing a random model's outputs cannot detect a wrong
+preprocessing. `tests/unit/export/test_pytorch.py` compares the preprocessed
+tensor and the weights exactly instead.

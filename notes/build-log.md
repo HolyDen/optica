@@ -3299,3 +3299,105 @@ removal, which is noise the next pass learns to ignore.
 succeed. The torch stack and `[clip]` are a second route (huggingface_hub 1.31.0,
 `notes/verified.md` § "What `.venv` holds…"). The human will replace the
 enumeration with a general rule; this pass does not edit `CLAUDE.md`.
+
+### Checkpoint 3 — what the plan leaves open in `export/`, and what was assumed
+**Pass:** 4, checkpoint 3   **Date:** 2026-09-15   **Where:** `src/optica/export/manager.py`, `src/optica/export/pytorch.py`, `src/optica/cli/classify.py:export`
+1. **Every `--checkpoint-rank` error is one `OpticaValidationError` (exit 1)**,
+   listing each invalid value with its reason, plus the available ranks when a
+   value names one that does not exist. The plan's "wrapped error" for a
+   non-integer is read as *a clean error, not a traceback*: the tokens pass the
+   parser as strings (the option is comma-separated), so it is not a parser
+   `UsageError`, and one error is what "validate all upfront, report all invalid
+   at once" can produce. Repeats collapse.
+2. **No checkpoint is `OpticaExportError`** — the command's precondition belongs
+   to the export contract.
+3. **`--output` is a `str` for `optica export`**, not the shared `Path` option:
+   `Path` drops the trailing slash the table depends on. `train` and `run` keep
+   the `Path` option (`run` is pass 5's).
+4. **Component count excludes the anchor**: `/out` and `C:\out` are
+   single-component. **N** (use the last component as the export name) creates
+   the parent if absent. With several ranks, **N** names them `<name>_ckptX`.
+5. **`--yes`, or no terminal, at the ambiguous multi-component row** is the hard
+   error the plan specifies; its fix lines carry the copy-paste command with a
+   trailing slash (unambiguous) and say the name branch needs a terminal (`--name`
+   is fast-follow, so there is no flag to suggest).
+6. **Order:** ranks and checkpoint existence (no torch) → `import_torch_stack` →
+   `--output` questions → selection prompt → warnings → stale partials removed →
+   writes. One timestamp for every folder of one invocation.
+7. **Selection prompt** lists the ranking and takes a rank or several,
+   comma-separated; an invalid answer is explained and asked again. No terminal
+   and no `--yes` → error naming `--checkpoint-rank 1`.
+8. **Stale-path warning** fires, per path, for `checkpoint_paths` in the exported
+   checkpoint's run log (read through `log_file`) that no longer exist. The plan
+   gives the text and not the trigger.
+9. **A checkpoint whose run never finished exports**, with `epochs_trained` and
+   `early_stopped` null in `model_info.json` and a warning. The plan says only
+   that such a checkpoint lacks the fields.
+10. **The six preprocessing values come from `checkpoint_info.json`** (checkpoint
+    2 stores them), never re-resolved; a checkpoint without them is refused.
+    `config` is copied as stored — its five extra keys (checkpoint 2, item 6) come
+    with it.
+11. **Stale partials removed are only those named in the export form**
+    (`.<family>_<N>cls_<YYYYMMDD>_<HHMMSS>[_ckptX][_x].partial`): `--output .`
+    would otherwise delete `.dataset.partial/`. A partial from the **N** branch is
+    not recognisable and stays.
+12. **Every export re-reads `model.pt` with `weights_only=True` and rebuilds the
+    model with the plan's two lines (`pretrained=False`, `strict=True`)** before
+    the folder is renamed into place. A head-name drift fails the export instead
+    of shipping an artifact whose documented reconstruction does not work.
+13. **`usage_examples.md` supports `crop_mode = "center"` only** — all four V1
+    backbones — and refuses anything else rather than teaching an unchecked
+    transform.
+14. **Completion line:** `✓ Export complete — rank R of N to <folder>` per folder,
+    then its files; the plan specifies no export completion message.
+**Reversible?** Each is local.
+
+### The generated usage example was first tested by a test that could not fail
+**Pass:** 4, checkpoint 3   **Date:** 2026-09-15   **Where:** `tests/unit/export/test_pytorch.py`
+**Found by the mutation run:** removing `Normalize` from the generated example
+failed only the string-level tests; the slow test that *executes* the example
+and compared its probabilities with training's evaluation path (`atol=1e-5`)
+still passed.
+**Why, measured:** a `pretrained=False` efficientnet_b0 is nearly input-blind —
+logits for two unrelated random inputs differed by 1.8e-4, softmax 0.5001/0.4999
+vs 0.5000/0.5000. A first repair scaled the classifier weights (×1e4 gave
+2.0 / 0.41 / 0.85 logit shifts for no-Normalize / bilinear / resize-235 when the
+head came from `create_model(num_classes=2)`), but through `reset_classifier`'s
+initialisation the same scaling moved the logits only 0.0045 — its own control
+assertion caught that, which is what the control was for.
+**Now:** two exact comparisons that do not depend on model sensitivity — the
+example's preprocessed `batch` must `torch.equal` training's evaluation tensor
+(control: a bilinear pipeline gives an unequal tensor), and the reconstructed
+model's state dict must equal the checkpoint's tensor for tensor. **Bite:**
+`Normalize` dropped, bicubic→bilinear, centre→random crop, `load_state_dict`
+removed from the example — each fails it; restored, 10 pass.
+
+### The unbounded-slice rule, broken once the same day
+**Pass:** 4, checkpoint 3   **Date:** 2026-09-15
+The first repair script above replaced the test with `s[:start] + new` — to end
+of file — hours after the incident entry said edit scripts would not. The test
+was the file's last and the test count was 8 before and after, so nothing was
+lost; but the rule was not followed. The second script asserts the replaced
+region holds exactly one test and ends at end of file, and that the count of
+tests is unchanged. Recorded because a procedure that is not followed is not a
+control either.
+
+### Checkpoint 3 — state
+**Pass:** 4   **Date:** 2026-09-15
+**Built:** `export/manager.py`, `export/pytorch.py`, `optica export`.
+**Tests:** `.venv`, slow included: 2193 passed, 12 skipped (2205). `.venv`,
+`-m "not slow"`: 2117 passed, 12 skipped, 76 deselected (2205). Torch-less,
+`-m "not slow"`: 2055 passed, 26 skipped, 76 deselected. Ruff clean; mypy clean
+in both venvs. `test_classify.py`'s export stub is a pointer to
+`test_export_command.py::TestSelection`; `export/__init__.py` joins `_NO_LOGIC`.
+**Mutation checks — 18 run, 18 bite** (`scratchpad/mutate_export.py`): ranks 2,
+output table 2, naming 2, stale partials 1, atomic write 2, `model_info` 1,
+`pytorch.py` 3, CLI 5 — 2 + 2 + 2 + 1 + 2 + 1 + 3 + 5 = 18. Plus the 4 targeted
+mutations of the generated example above, after the execution test was
+rewritten.
+**Smoke:** `optica export --dry-run` and `--checkpoint-rank 1,2 --yes` against
+checkpoint 2's smoke checkpoints wrote two complete folders (`_ckpt1`,
+`_ckpt2`), before the tests were written.
+**Not exercised:** a write-protected `--output` on a real ACL (constructed with a
+file in place of the folder); the N branch's partial left by an interrupt.
+**Next:** checkpoint 4, the live `optica train` and `optica export` runs.
