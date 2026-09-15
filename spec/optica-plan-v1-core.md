@@ -845,7 +845,7 @@ Continue? [y/N — n to exit]
 Model `ViT-B-32` with `openai` pretrained weights, hardcoded in V1:
 
 ```python
-model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai')
+model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai', force_quick_gelu=True)
 ```
 
 Images are scored against the template **`"a photo of a {class}"`**, with the class name normalised first — underscores and hyphens become spaces, and the name is lowercased — so `golden_retriever` renders as *"a photo of a golden retriever"*. The score is the **cosine similarity between the L2-normalised image and text embeddings**, compared directly against `clip_threshold`. It is deliberately **not** `logits_per_image`, which open-clip scales by `logit_scale` (≈100) and which would put every value far outside the 0.0–1.0 range the seven bands assume. The blocklist's grouped path scores against each sub-term with the same template. `clip_threshold = 0.25` is calibrated for **this model, these weights, and this template** — all three are variables, and Implementation Note 6's recalibration guidance covers a change to any of them.
@@ -1060,7 +1060,7 @@ The steps are classification-specific as written, but `engine.py` must be built 
 | `efficientnet-small` | `efficientnet_b0` | Last 2 MBConv blocks (`blocks[5]`, `blocks[6]`) + `conv_head` + `bn2` |
 | `efficientnet-large` | `efficientnet_b4` | Last 2 MBConv blocks + `conv_head` + `bn2` |
 | `resnet` / `resnet-50` | `resnet50` | Last residual layer (`layer4`) |
-| `mobilenet` / `mobilenet-large` | `mobilenetv3_large_100` | Last 3 blocks |
+| `mobilenet` / `mobilenet-large` | `mobilenetv3_large_100` | Last 3 blocks + `conv_head` |
 
 **Input resolution and normalization follow the backbone, resolved from timm.** `timm.data.resolve_model_data_config(model)` returns `input_size`, `mean`, `std`, `interpolation`, `crop_pct` and `crop_mode` for the selected model, and those values drive both the training transforms and the exported preprocessing metadata — all six are exported, not `input_size` alone. **Augmentation is on by default and replaces the centre crop with a random one**, so `crop_pct` and `crop_mode` configure the exported preprocessing rather than the default training transform. The six values are resolved per model rather than shared across the four backbones: `efficientnet_b0`, `resnet50` and `mobilenetv3_large_100` are 224px models, while `efficientnet_b4` (`efficientnet-large`) trains at **320** and tests at **384** under its default `ra2_in1k` tag. **V1 uses the training `input_size` throughout** — training, validation, export and inference from the exported artifact all preprocess at the same resolution, so `model_info.json`'s `input_size` is the single number a consumer needs and no stage has to choose between two. `efficientnet_b4`'s 384px test size is deliberately unused in V1; one resolution per model costs a little top-1 accuracy on that one backbone and removes the question entirely. Fixing all four at 224 was rejected — it would run the one model users select *for* accuracy below its pretrained resolution, and would make `model_info.json`'s `input_size` a constant field. *Accepted cost: `efficientnet-large` processes roughly twice the pixels per image, which matters most on CPU.*
 
