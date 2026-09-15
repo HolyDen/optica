@@ -49,6 +49,7 @@ LIST_TRUNCATE: Final = 10
 list does."""
 
 _FORBIDDEN_CHARS: Final = '/\\,?*:|"<>'
+_LAST_CONTROL: Final = 0x1F
 _RESERVED_NAMES: Final[frozenset[str]] = frozenset(
     {"con", "aux", "nul", "prn"}
     | {f"com{i}" for i in range(1, 10)}
@@ -131,14 +132,21 @@ def class_name_problem(name: str) -> str | None:
     """Return why ``name`` cannot be a class folder, or None if it can.
 
     Rule 1 of plan § *Class-name rules*: non-empty; not ``.``, ``..`` or any
-    all-dots name; no path separator; no comma; none of ``? * : | " < >``; at
-    most 50 characters; not beginning with ``-``; and not a reserved Windows
-    device name.
+    all-dots name; no path separator; no comma; no control character
+    (U+0000 to U+001F); none of ``? * : | " < >``; at most 50 characters; not
+    beginning with ``-``; not ending with ``.`` or a space; and not a reserved
+    Windows device name.
 
     The leading-``-`` clause is the amended one. The parser binds the token after
     ``--classes`` as its value whatever it looks like, so
     ``optica fetch --classes --yes`` arrives here as a class called ``--yes``;
     this is the only layer that can tell it is wrong.
+
+    The control-character and trailing ``.``/space clauses were added on
+    2026-09-14. Windows strips a trailing dot or space when it creates a folder,
+    so ``cat.`` would be written as ``cat`` and silently merge with that class.
+    The control range is exactly the plan's U+0000 to U+001F; DEL (U+007F) is not
+    in it and is accepted.
     """
     if not name:
         return "is empty"
@@ -148,6 +156,8 @@ def class_name_problem(name: str) -> str | None:
         return "contains a path separator"
     if "," in name:
         return "contains a comma, which separates values"
+    if any(ord(char) <= _LAST_CONTROL for char in name):
+        return "contains a control character"
     bad = sorted({char for char in name if char in _FORBIDDEN_CHARS})
     if bad:
         return f"contains {' '.join(bad)}, which Windows rejects in folder names"
@@ -155,6 +165,8 @@ def class_name_problem(name: str) -> str | None:
         return f"is longer than {MAX_CLASS_NAME_LENGTH} characters"
     if name.startswith("-"):
         return "begins with '-', which is a flag spelling rather than a name"
+    if name.endswith((".", " ")):
+        return "ends with '.' or a space, which Windows drops from folder names"
     # Windows reserves the device names with any extension as well: `con.jpg`
     # is as unusable as `con`.
     if name.split(".", 1)[0].casefold() in _RESERVED_NAMES:

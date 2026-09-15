@@ -2860,3 +2860,39 @@ that pass. The companion session undertook to make this edit at the pass 3
 boundary and did not; it was surfaced again by amendment session 2's addendum
 edits and supplied on 14 September. Recorded because a dropped handoff is worth
 seeing in the record, not only its repair.
+
+## Pass 4
+
+### Pass 4 opened — checkpoint 0, the amended class-name clauses
+**Pass:** 4, checkpoint 0   **Date:** 2026-09-15   **Where:** `src/optica/input/classes.py`
+**Assigned deliberately outside pass 4's scope:** the 14 September amendment to
+l.242 added two exclusions no pass owned — control characters U+0000–U+001F and
+names ending in `.` or a space.
+**Done:** both predicates in `class_name_problem()`. Every surface reaches it
+through `normalize_class_names()` (`-c` in `cli/classify.py`, the manifest
+column and folder names in `input/local.py`, the blocklist definitions), so no
+caller changed. Check order: after the comma check for control characters, after
+the leading-`-` check for the trailing clause, so an all-dots name like `..`
+keeps its path-component reason rather than the trailing-dot one.
+**Range decided literally:** the plan says U+0000–U+001F, so DEL (U+007F) is
+accepted. Windows permits it in file names. A test pins both boundaries.
+**Bite proven:** removing the control-character check fails 7 tests; removing the
+trailing check fails 6. Restored, 141 pass.
+
+### Found at checkpoint 0 — logged, not fixed
+**Pass:** 4, checkpoint 0   **Date:** 2026-09-15
+
+1. **`tests/integration/test_exit_codes.py::TestMilestone::test_no_torch_is_importable_in_this_environment`
+   now fails locally.** It asserts that `import torch` fails in the running
+   interpreter — it inherits the torch-less condition rather than constructing
+   it, and torch is now installed in `.venv` for this pass. It still passes in
+   CI, which never installs torch, so CI is not red. The pass 1 milestone it
+   guards (`optica --version` with no torch) would be better tested by
+   constructing the condition: run `--version` in a subprocess with a
+   `sys.meta_path` finder that refuses `torch`, and assert success. Not changed
+   here — checkpoint 0 is scoped to the class-name rule.
+2. **`ruff format --check` reports 16 files that would be reformatted**, all
+   untouched by this pass (`cli/classify.py`, `cli/config.py`, `cli/main.py`,
+   `config/`, and ten test files). CI runs `ruff check` only, which is clean.
+   Format drift has been accumulating unenforced since at least pass 3. Pass 6
+   owns CI; whether to enforce formatting is its call.

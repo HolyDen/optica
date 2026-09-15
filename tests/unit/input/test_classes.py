@@ -1,9 +1,10 @@
 """Class-name rules, the blocklist, and the auto-mode class sequence.
 
 Covers plan § "CLI Layer & Conventions" → *Class-name rules* (as amended
-2026-09-13: leading ``-`` excluded), § "Input & Acquisition" → *Class-count
-validation* and *Undefinable classes in auto modes*, and the ``--yes`` table's
-overlap-warning and group-or-separate rows.
+2026-09-13: leading ``-`` excluded; as amended 2026-09-14: control characters
+U+0000 to U+001F and a trailing ``.`` or space excluded), § "Input & Acquisition" →
+*Class-count validation* and *Undefinable classes in auto modes*, and the
+``--yes`` table's overlap-warning and group-or-separate rows.
 """
 
 from __future__ import annotations
@@ -70,6 +71,40 @@ class TestFilesystemSafeNames:
     @pytest.mark.parametrize("name", ["com0", "com10", "lpt0", "console", "auxiliary"])
     def test_near_misses_of_reserved_names_pass(self, name):
         assert cn.class_name_problem(name) is None
+
+    # Amended 2026-09-14: control characters and a trailing `.` or space.
+
+    @pytest.mark.parametrize(
+        "name", ["a\x00b", "cat\n", "\tcat", "a\rb", "a\x1bb", "a\x1fb"]
+    )
+    def test_a_control_character_is_rejected(self, name):
+        assert "control character" in (cn.class_name_problem(name) or "")
+
+    @pytest.mark.parametrize("name", ["a\x20b", "a\x7fb"])
+    def test_the_control_range_ends_at_u001f(self, name):
+        # The plan names U+0000 to U+001F exactly: space (U+0020) and DEL (U+007F)
+        # sit either side of the boundary and are not excluded by this clause.
+        assert cn.class_name_problem(name) is None
+
+    @pytest.mark.parametrize("name", ["cat.", "cat ", "cat. ", "cat..", "x.y."])
+    def test_a_trailing_dot_or_space_is_rejected(self, name):
+        assert "ends with '.' or a space" in (cn.class_name_problem(name) or "")
+
+    @pytest.mark.parametrize("name", ["x.y", "orange cat", ".cat", " cat"])
+    def test_an_inner_or_leading_dot_or_space_is_fine(self, name):
+        assert cn.class_name_problem(name) is None
+
+    def test_an_all_dots_name_keeps_its_own_reason(self):
+        # `..` also ends with a dot; the path-component reason is the useful one.
+        assert "dots" in (cn.class_name_problem("..") or "")
+
+    def test_the_new_clauses_list_every_failing_name(self):
+        with pytest.raises(OpticaValidationError) as info:
+            cn.normalize_class_names(["cat", "dog.", "bird ", "fi\x00sh"])
+        assert info.value.message.startswith("3 class names")
+        text = " ".join(info.value.fix)
+        for name in ("'dog.'", "'bird '", "'fi\\x00sh'"):
+            assert name in text
 
 
 class TestWholeListNormalization:

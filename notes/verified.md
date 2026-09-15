@@ -1247,3 +1247,20 @@ and back during the fetch and the three deselections held. No label-map or index
 download was needed — the seeded cache was reused.
 **Consequence:** `input/curation.py:fetch_more` and the browser Fetch More path
 are no longer "written but never run" for Open Images. Flickr remains unrun.
+
+## Pass 4
+
+### Windows drops a trailing `.` or space from a folder name
+**Date:** 2026-09-15
+**How:** on the build machine (Windows 11, NTFS), inside `.smoke/`:
+```
+python -c "import os; from pathlib import Path; d=Path('.smoke/cp0');
+[os.makedirs(d/n, exist_ok=True) for n in ['cat','cat.','cat ']];
+print(sorted(os.listdir(d)))"
+```
+**Result:** `['cat']` — three `makedirs` calls, one folder. `cat.` and `cat `
+were both created as `cat` without an error.
+**Consequence:** the amended class-name clause (plan l.242, "not end with `.` or
+a space") is not cosmetic. Without it `-c cat,cat.` passes rule 2 (the two names
+differ) and writes both classes into one folder on Windows.
+`class_name_problem()` in `src/optica/input/classes.py`.
