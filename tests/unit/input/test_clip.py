@@ -179,9 +179,7 @@ class TestWeights:
         assert str(cache.path) in line  # the cache path is reported
         assert problem in line
 
-    def test_still_bad_after_one_download_is_a_load_error_naming_the_path(
-        self, tmp_path
-    ):
+    def test_still_bad_after_one_download_is_a_load_error_naming_the_path(self, tmp_path):
         cache = _Cache(tmp_path / "w.safetensors", first=b"bad", fresh=b"still bad")
         with pytest.raises(OpticaCLIPLoadError) as info:
             clip.ensure_weights(cache, _pinned(), report=lambda _: None)
@@ -426,27 +424,3 @@ class TestRealOpenClip:
         )
         assert len(scores) == 3
         assert all(s is not None and -1.0 <= s <= 1.0 for s in scores)
-
-
-@pytest.mark.slow
-class TestDevice:
-    def test_cuda_is_chosen_when_available(self, monkeypatch):
-        import torch
-
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-        assert clip.select_device().type == "cuda"
-
-    def test_cpu_when_neither_accelerator_is_available(self, monkeypatch):
-        import torch
-
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
-        assert clip.select_device().type == "cpu"
-
-    def test_mps_when_only_mps_is_available(self, monkeypatch):
-        # Constructs the condition; the MPS device itself is never used here.
-        import torch
-
-        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
-        assert clip.select_device().type == "mps"

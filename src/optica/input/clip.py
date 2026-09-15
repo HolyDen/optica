@@ -43,7 +43,6 @@ tested in CI; the half that needs the extra is imported lazily and raises
 from __future__ import annotations
 
 import hashlib
-import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -51,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from optica.exceptions import OpticaCLIPError, OpticaCLIPLoadError
 from optica.input.classes import ResolvedClass
+from optica.utils.mlstack import prepare_hub, select_device
 
 if TYPE_CHECKING:
     import torch
@@ -71,7 +71,6 @@ __all__ = [
     "load_clip",
     "overfetch",
     "prompt_for",
-    "select_device",
     "select_survivors",
     "sha256_of",
     "weights_problem",
@@ -326,22 +325,6 @@ class ImageScorer(Protocol):
         ...
 
 
-def select_device() -> torch.device:
-    """CUDA if available, then MPS, then CPU.
-
-    The MPS branch is written and has never been run: the build machine has an
-    NVIDIA GPU and no Apple silicon (``notes/build-log.md``).
-    """
-    import torch
-
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    mps = getattr(torch.backends, "mps", None)
-    if mps is not None and mps.is_available():  # TODO(test): MPS never exercised
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
 class ClipScorer:
     """An open-clip model, its preprocessing and its tokenizer, on one device."""
 
@@ -426,9 +409,7 @@ def load_clip(
         OpticaCLIPLoadError: The weights cannot be downloaded, stay corrupt
             after one re-download, or fail to load.
     """
-    # Before the Hub is imported: on Windows without Developer Mode it warns
-    # about symlinks on every download, which is not the user's to act on.
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    prepare_hub()  # before the Hub is first imported
     open_clip = _import_open_clip()
     import huggingface_hub
 
