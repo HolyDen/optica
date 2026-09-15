@@ -1370,3 +1370,53 @@ first-use notice named the size and the cache path before downloading.
 **Consequence:** clip mode is exercised end to end against Open Images and the
 real model. The grouped path's scoring is exercised only by the fake-scorer
 tests.
+
+### What `.venv` holds, against `pyproject.toml`'s declared dependencies and extras
+**Date:** 2026-09-15 (after pass 4 checkpoint 1's `open-clip-torch` install)
+**How:** `.venv/Scripts/python scratchpad/env_audit.py` — reads `optica`'s own
+installed `Requires-Dist` (the editable install's metadata, which matches
+`pyproject.toml`), then for each root walks the installed dependency closure
+through `importlib.metadata`, evaluating markers for this interpreter (CPython
+3.11.9, Windows AMD64). The torch stack is audited as a fifth root although it is
+not an extra: plan § "Package install split" gives it to `optica setup`. A second
+query listed every installed `Requires-Dist` naming `click`.
+**Result:** 65 installed distributions.
+
+| Root | Declared | Installed (version) | State | Closure |
+|---|---|---|---|---|
+| Core | typer `>=0.27,<1.0`; rich `>=15.0,<16.0`; python-dotenv `>=1.2,<2.0`; pydantic-settings `>=2.15,<3.0`; httpx `>=0.28,<1.0`; pillow `>=12.3,<13.0` | 0.27.2; 15.0.0; 1.2.3; 2.15.0; 0.28.1; 12.3.0 | **full**, all in range | 22 |
+| `[web]` | fastapi `>=0.141,<1.0`; uvicorn `>=0.52,<1.0` | 0.141.1; 0.53.0 | **full**, in range | 13 |
+| `[clip]` | open-clip-torch `>=3.3,<4.0` | 3.3.0 | **full**, in range — since checkpoint 1; before it, **absent** | 32 |
+| `[all]` | `optica[web,clip]` → the three above | as above | **full** (was partial: web only, until checkpoint 1) | 40 |
+| `[test]` | pytest `>=9.1,<10.0`; ruff `>=0.16,<1.0`; mypy `>=2.3,<3.0` | 9.1.1; 0.16.7; 2.3.1 | **full**, in range | 13 |
+| torch stack (setup-owned, not an extra) | torch, torchvision, timm, scikit-learn — no bounds, by design | 2.14.0+cu130; 0.29.0+cu130; 1.0.29; 1.9.1 | **full** | 34 |
+
+**Partial extras: none.** **Reached by no root: `pip 26.2.1` only** — venv
+tooling. Nothing arrived that no extra, Core, or the setup-owned stack accounts
+for.
+
+What checkpoint 1's install added, and nothing else: `open_clip_torch 3.3.0`,
+`ftfy 6.3.1`, `regex 2026.9.10`, `wcwidth 0.8.3` (the dry run's list; each is now
+reached only by `[clip]`/`[all]`). Everything else open-clip needs was already
+present through the torch stack.
+
+Distributions reached **only** by the torch stack (not by `[clip]`): scikit-learn
+1.9.1 and its closure — scipy 1.17.1, joblib 1.6.0, threadpoolctl 3.6.0,
+narwhals 2.26.0 (`scikit-learn` requires `narwhals>=2.0.1`), cloudpickle 3.1.2
+(`joblib` requires `cloudpickle>=3.0`). Reached only by `[clip]`: ftfy, regex,
+wcwidth, open-clip-torch.
+
+**Real Click arrives through the torch stack, not only through `[web]`.**
+`huggingface_hub 1.31.0` declares `click<9.0.0,>=8.4.2` **unconditionally**, and
+both `timm` and `open-clip-torch` require `huggingface_hub`. Installed: click
+8.5.0, reached by `[web]` (uvicorn `click>=7.0`), `[clip]`, `[all]` and the torch
+stack. So `import click` succeeds in any environment with `optica[clip]` or
+with what `optica setup` installs for training — not only under `optica[web]`, as
+`CLAUDE.md`'s Click note currently says. Core alone still has no Click (typer
+0.27.2 requires only `shellingham` beyond its vendored copy).
+
+**Consequence:** pass 5's `optica setup` installs torch, torchvision, timm and
+scikit-learn; this entry is what a correct result looks like on CPython 3.11 /
+Windows / CUDA 13.0 — including the six distributions only scikit-learn brings,
+and real Click arriving with timm. The `except click.*` hazard `CLAUDE.md`
+describes is live on every machine that can train, not only web installs.
