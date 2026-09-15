@@ -3401,3 +3401,112 @@ checkpoint 2's smoke checkpoints wrote two complete folders (`_ckpt1`,
 **Not exercised:** a write-protected `--output` on a real ACL (constructed with a
 file in place of the folder); the N branch's partial left by an interrupt.
 **Next:** checkpoint 4, the live `optica train` and `optica export` runs.
+
+### Checkpoint 4 — the live milestone, and how it was verified
+**Pass:** 4, checkpoint 4   **Date:** 2026-09-15   **Where:** `.smoke/pass4-live/milestone/`; facts in `notes/verified.md` § "Pass 4 milestone"
+**Run as one chain,** at the human's direction: a fresh project, a real
+clip-mode fetch to make the dataset, `optica train` on it, `optica export` from
+that run. Nothing from the checkpoint 2 smoke run was reused except the Open
+Images class list.
+**How long-running commands were driven.** The Bash tool kills a foreground
+command at two minutes. The chain ran as one shell script under
+`run_in_background`; the harness notified on exit, and a bounded `until grep`
+loop (10-minute tool timeout) waited on the `CHAIN DONE` line. Pass 3 needed an
+HTTP client because its server stayed up; train and export are batch commands
+that exit, so exit codes plus their artifacts are the whole observable result.
+Verification was a separate Python process reading only the artifacts — it
+does not trust anything the commands printed.
+**What in the path depends on that mechanism — and what the mechanism changed:**
+- **Nothing in Optica depends on running in the background.** The commands were
+  ordinary child processes of bash.
+- **stdin was not a terminal**, so every prompt took its non-interactive branch,
+  answered by `--yes`: training's `--output` creation and K/A/D/S (no prior
+  checkpoints, so not reached), export's selection (rank 1) and `--output`
+  (existed after training). **No interactive prompt was exercised live** —
+  those are covered by the command tests only.
+- **stdout was a pipe to a cp1252 file**, so Rich rendered no live progress bars
+  and `protect_streams` escaped non-ASCII: this found a cosmetic defect below.
+- **The private home came from `HOME`/`USERPROFILE`**, and Optica resolves
+  `~/.optica` through `Path.home()`, which reads `USERPROFILE` on Windows —
+  the same isolation mechanism every live run in this build has used. `HF_HOME`
+  pointed at the real Hugging Face cache, so the CLIP weights were not
+  re-downloaded; mobilenetv3's were downloaded inside the run.
+**Result:** all three exit 0; the verifier prints 24 `[OK]` and no `[FAIL]` (23
+failable checks and one summary line over 18 per-key comparisons); it prints 7
+`[FAIL]` when the rank-1 checkpoint is changed on disk.
+
+### Found at checkpoint 4 — the epoch line's `│` prints as `│` on a cp1252 stream
+**Pass:** 4, checkpoint 4   **Date:** 2026-09-15   **Where:** `src/optica/cli/classify.py:_RichReporter.epoch_finished`
+`train.out` reads `train loss 1.0853  acc 0.409  │ val loss 0.9050  acc
+0.833`. The separator is a box-drawing character this pass chose; on a non-UTF-8
+stdout `protect_streams` escapes it, exactly as pass 2 designed. Nothing is lost,
+but a plain ASCII separator would read the same everywhere. **Not changed after
+the milestone ran** — the milestone evidence stays tied to the committed code.
+→ the next pass that touches `cli/classify.py` (pass 5, `run`).
+
+### Correction — the checkpoint 2 entry "Four more ambient-state tests, three of them mine"
+**Pass:** 4   **Date:** 2026-09-15
+The title's count is wrong. The entry describes four pass-1 tests in
+`test_classify.py` that relied on the repo root having no `./dataset/` (not
+mine), and one test of mine (`test_mlstack.py::test_a_server_warning_prints_once_not_twice`)
+that failed twice over on inherited logging state — plus two older
+`sys.modules` tests it logs without rewriting. Mine: 1, not 3. Corrected here
+rather than in place, the log being append-only.
+
+### Pass 4 — closed
+**Pass:** 4   **Date:** 2026-09-15
+**Milestone met:** `optica train` and `optica export` run to completion, in one
+chain, on a small real dataset (`notes/verified.md` § "Pass 4 milestone").
+**Built:** the class-name exclusions (checkpoint 0, assigned outside scope);
+`input/clip.py` and CLIP filtering in `fetch --mode clip` and the grouped path;
+`training/` (`splits`, `models`, `transforms`, `checkpoints`, `runlog`, `data`,
+`engine`, `trainer`); `export/` (`manager`, `pytorch`); `utils/mlstack.py`;
+`optica train` and `optica export`.
+**Tests at close:** `.venv`, slow included: 2193 passed, 12 skipped (2205
+collected). `.venv`, `-m "not slow"`: 2117 passed, 12 skipped, 76 deselected.
+Torch-less scratch venv (CI's shape), `-m "not slow"`: 2055 passed, 26 skipped,
+76 deselected. Ruff clean; mypy clean in both venvs. Mutation checks: checkpoint 1
+12 of 12; checkpoint 2 27 of 27 (26 on first run); checkpoint 3 18 of 18, plus 4
+targeted on the generated usage example.
+**Commits this pass: 22**, this entry's included — checkpoint 0: 1; between 0
+and 1: 1; checkpoint 1: 4; between 1 and 2: 2; checkpoint 2: 8; between 2 and 3:
+1; checkpoint 3: 4; checkpoint 4: 1 (1 + 1 + 4 + 2 + 8 + 1 + 4 + 1 = 22).
+**Entries under "## Pass 4": 27** `###` entries (`grep -c`), this one included —
+23 before checkpoint 4, plus the milestone entry, the `│` finding, the
+correction and this close (23 + 4 = 27).
+
+**Handed forward:**
+
+| To | Item | Recorded in |
+|---|---|---|
+| **Amendment session** | **One decision:** the CLIP load call with `force_quick_gelu=True` **and** the observation that 0.25 sits inside the true-positive score range — the call and the number are calibrated together | "Proposed plan change — the CLIP load call…"; "Finding for the human — 0.25…" |
+| **Amendment session** | mobilenet's `conv_head` unfrozen in Phase 2 — proposed l.1063 cell | "Checkpoint 2 — what the plan leaves open…", item 1 |
+| **Human, at the pass boundary** | `CLAUDE.md`'s Click note enumerates exceptions; there are now two routes (`[web]`, torch stack/`[clip]`). A general rule replaces it. `CLAUDE.md` untouched | "Handoff — `CLAUDE.md`'s Click note…" |
+| **Pass 5** | `optica setup` reads the `.venv` audit, including real Click via huggingface_hub | `notes/verified.md` § "What `.venv` holds…" |
+| **Pass 5** | `optica run`: call `training.trainer.train` and `export.manager` rather than re-sequencing; `run`'s `--output` is still the shared `Path` option and cannot see a trailing slash — `export`'s `str` option shows the form | checkpoint 2 item 18; checkpoint 3 item 3 |
+| **Pass 5** | Fetch More still refuses grouped blocklist classes | "CLIP Adapter — what the plan leaves open…", item 10 |
+| **Pass 5** | The epoch line's `│` separator | "Found at checkpoint 4…" |
+| **Pass 5 or 6** | `test_main.py::TestVersion::test_no_torch_is_imported` and `config/test_init.py::test_importing_it_does_not_import_torch` still read the shared `sys.modules`; they fail the day a fast test imports torch in-process. The subprocess form in `test_system.py` is the fix | "Four more ambient-state tests…" |
+| **Pass 6** | `ruff format --check` reports 16 pre-existing files; CI runs `ruff check` only | "Found at checkpoint 0…", item 2 |
+| **Human** | `.smoke/pass4-live/` is this pass's throwaway directory (clip runs, the GELU comparison, the train smoke, the milestone). The scratch torch-less venv lived in the session scratchpad | — |
+
+**Live coverage — not exercised, for pass 6's README** (joins pass 3's list):
+- **A genuinely write-protected `--output`** — tested by putting a file where
+  the folder should be, never against a real ACL or read-only mount.
+- **An interrupted export under a user-chosen name** (the `--output` N branch):
+  its `.partial` is not recognisable as an export's and is left in place.
+- **The CLIP weights-repair path** — delete and one re-download of a corrupt or
+  truncated `open_clip_model.safetensors`; tested with constructed files only.
+- **MPS** — written, never run; the device choice is tested by monkeypatching
+  `torch.backends.mps.is_available`.
+- **The grouped blocklist path's CLIP scoring** — fake scorer only.
+- **Interactive prompts of `optica train` and `optica export`** — every live run
+  used `--yes` with a non-terminal stdin; the prompts are covered by the command
+  tests with patched `typer.prompt`/`typer.confirm`.
+- **Ctrl+C during a real training run at a terminal** — interruption is raised
+  from the reporter in tests; resume is exercised end to end there, not live.
+- **CPU training through the CLI** and **`train --manifest` with the real
+  trainer** — the trainer runs on CPU in the slow tests; the CLI paths use a fake
+  trainer.
+
+**Pass 4 is complete.** Next: the amendment session, then pass 5.

@@ -1547,3 +1547,65 @@ bilinear 0.0045. Normal-init heads std 1 / std 100: bilinear 0.0000 / 0.0005.
 **Consequence:** a test comparing a random model's outputs cannot detect a wrong
 preprocessing. `tests/unit/export/test_pytorch.py` compares the preprocessed
 tensor and the weights exactly instead.
+
+### Pass 4 milestone — `optica fetch` → `optica train` → `optica export`, one chain
+**Date:** 2026-09-15 (11:13:24–11:16:46 UTC)
+**How:** `.smoke/pass4-live/milestone.sh`, started with the Bash tool's
+`run_in_background`, in a fresh project `.smoke/pass4-live/milestone/` and a
+fresh private home `home3` (only the Open Images class list copied in;
+`HF_HOME` = the real Hugging Face cache, which held the CLIP weights and
+efficientnet_b0 but **not** mobilenetv3). `PYTHONIOENCODING` deliberately unset.
+The three commands run with `&&`, each writing `<step>.out`, `<step>.err` and an
+`END <step>: exit N after Ns` line to `chain.log`. Verification is a separate
+script, `.smoke/pass4-live/verify_milestone.py`, run afterwards in a new Python
+process against the artifacts only.
+**Result — the chain:**
+
+| Step | Command | Exit | Wall |
+|---|---|---|---|
+| fetch | `optica fetch -c cat,dog,horse -i 30 --mode clip --yes` | 0 | 181 s |
+| train | `optica train --model mobilenet --epochs 10 --yes` | 0 | 18 s |
+| export | `optica export --yes` | 0 | 3 s |
+
+Fetch: 60 candidates per class; at clip_threshold 0.25 cat 45, dog 31, horse 37
+passed; 30 kept each (45 + 15 = 60, 31 + 29 = 60, 37 + 23 = 60); 90 in `dataset/`.
+Train: `CUDA GPU: NVIDIA GeForce RTX 4070 Ti`; mobilenetv3_large_100 weights
+downloaded on first use inside the run; split 22/4/4 per class (30 →
+`n_val = floor(4.5) = 4`, `n_test = min(floor(4.5), 25) = 4`; 3 × 30 = 90);
+phases 3 + 7; val accuracy per epoch 0.833, 0.917, 0.917, 1.000, 1.000, 1.000,
+1.000, 0.917, 0.750, 0.833; three checkpoints retained (epochs 5, 6, 7, all val
+1.000 — rank 1 is epoch 7 by the higher-epoch tie-break, although epoch 5's test
+accuracy is higher: test metrics never rank, as the plan requires). Completion
+block: best val_accuracy 1.000; Epochs 10 of 10; Test accuracy 0.833, loss 0.704.
+Export: `optica-output/mobilenet_3cls_20260915_141645/`, rank 1 of 3.
+
+**Result — the handoff: 24 `[OK]` lines, no `[FAIL]`.** Of the 24, 23 are
+checks that can fail; one ("copies the checkpoint's metrics…") is a summary
+printed unconditionally, its 18 per-key comparisons each printing `[FAIL]` on a
+mismatch — which the bite run below shows them doing:
+- every checkpoint carries one `run_id` (`20260915_141628`), the run-end pair,
+  `interrupted: false`; the two log copies are byte-identical; the log's
+  `checkpoint_paths` equal the folders on disk;
+- `model_info.json`: `run_id` is the run's; rank 1 of 3; `checkpoint_path`
+  `checkpoints/checkpoint_val1.000_epoch7/` — the rank-1 checkpoint; metrics,
+  preprocessing, config, `dataset_path`, `log_file` copied unchanged from it;
+  `class_names.json` = checkpoint `classes` = sorted dataset folders
+  (`cat, dog, horse`); `log_file` expands to the global log;
+- `model.pt` loads with `weights_only=True`, keys in the plan's order, and its
+  `state_dict` equals the rank-1 checkpoint's tensor for tensor (312 tensors);
+- the generated `usage_examples.md`, executed on the **real test split**
+  (reproduced from the checkpoint's `random_state` and split ratios, and equal
+  to the log's split counts): preprocessing tensor-identical to training's
+  evaluation transform for 12 of 12 images; 10 correct of 12 = 0.833333 =
+  recorded `test_accuracy`; mean loss 0.704148 on CPU vs recorded 0.704209 on
+  CUDA (|Δ| 6.1e-5). Per image: cat 3/4 (0043 → dog), dog 4/4, horse 3/4 (0049 →
+  dog).
+
+**The verifier can fail:** with `checkpoint_val1.000_epoch5`'s `epoch` set to 99
+on disk (making it rank 1), 7 checks failed — checkpoint_path, val_loss,
+test_accuracy, test_loss copied, state_dict equality, usage-example accuracy and
+loss. File restored (byte-compared); all checks pass again.
+
+**Consequence:** pass 4's milestone — `optica train` and `optica export` running
+to completion on a small real dataset, export consuming that training run — is
+met. What the path did **not** exercise is recorded in the build log's close.
