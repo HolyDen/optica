@@ -120,6 +120,18 @@ module = ["fastapi", "fastapi.*", "starlette", "starlette.*", "uvicorn", "uvicor
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# The torch stack and `optica[clip]` never reach CI (plan § "Code Structure",
+# CI/CD). Every import of them is lazy, inside a function, so Core imports
+# cleanly without them; mypy must not fail on the import either. Where they are
+# installed (the pass 4 `.venv`), torch and huggingface_hub are typed and checked.
+module = [
+    "torch", "torch.*", "torchvision", "torchvision.*", "timm", "timm.*",
+    "sklearn", "sklearn.*", "open_clip", "open_clip.*",
+    "huggingface_hub", "huggingface_hub.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # The same absence, one level up: without the extra, FastAPI's decorators and
 # response classes are `Any`, which strict mode reports as untyped decorators and
 # `Any` returns. Relaxed only where FastAPI is used, and only those two checks.
