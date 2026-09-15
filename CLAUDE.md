@@ -152,11 +152,14 @@ declares no dependency, so `import click` fails in a Core install. Use
 `typer`'s equivalents — `typer.testing`, `typer._click.exceptions` — never
 `click.*`. Adding real Click would install a second `UsageError` class
 alongside the vendored one, and every `except` would silently stop firing.
-`optica[web]` is the exception that makes this dangerous: uvicorn depends on
-real Click, so with the web extra installed `import click` **succeeds**. The
-mistake stops being loud. A mistaken `except click.UsageError` then compiles,
-runs, and silently never fires, because Typer still raises the vendored
-`typer._click` one.
+**Never rely on Click's absence.** Real Click reaches the environment by more
+than one route — uvicorn brings it with `optica[web]`, and `huggingface_hub`
+brings it with the torch stack — and any dependency bump can add another. Where
+it is present `import click` **succeeds** and the mistake stops being loud: a
+mistaken `except click.UsageError` compiles, runs, and silently never fires,
+because Typer still raises the vendored `typer._click` one. Do not write code
+whose correctness depends on which route installed what. Use `typer`'s
+equivalents unconditionally.
 
 ## Tests
 
