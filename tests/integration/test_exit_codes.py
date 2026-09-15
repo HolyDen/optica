@@ -10,6 +10,7 @@ process's actual status, which is what a CI job or a container build branches on
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import textwrap
@@ -119,24 +120,99 @@ prompts.is_interactive = lambda: True
         assert result.returncode == ExitCode.INTERRUPTED
 
 
+_TORCH_STACK = ("torch", "torchvision", "timm", "sklearn", "open_clip")
+"""Top-level import names of the torch stack and the CLIP extra."""
+
+_HIDE_TORCH = f"""
+import importlib.util
+_HIDDEN = {_TORCH_STACK!r}
+
+class _Hide:
+    # Wraps a finder so the torch stack is not found, exactly as on a machine
+    # where it was never installed: find_spec gives None, import raises
+    # ModuleNotFoundError.
+    def __init__(self, inner):
+        self.inner = inner
+    def find_spec(self, name, path=None, target=None):
+        if name.partition(".")[0] in _HIDDEN:
+            return None
+        return self.inner.find_spec(name, path, target)
+    def __getattr__(self, attr):
+        return getattr(self.inner, attr)
+
+sys.meta_path[:] = [_Hide(finder) for finder in sys.meta_path]
+for _name in _HIDDEN:
+    assert importlib.util.find_spec(_name) is None, f"failed to hide {{_name}}"
+"""
+
+
+def _shadow_torch(fake_root: Path) -> str:
+    """Return a patch that puts a recording fake of the torch stack first.
+
+    Each fake package prints the stack that imported it, so a failure names the
+    importer.
+    """
+    for name in _TORCH_STACK:
+        package = fake_root / name
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text(
+            "import sys, traceback\n"
+            f"sys.stderr.write('FAKE {name} IMPORTED BY:\\n')\n"
+            "traceback.print_stack()\n",
+            encoding="utf-8",
+        )
+    return f"""
+import importlib.util
+sys.path.insert(0, {str(fake_root)!r})
+for _name in {_TORCH_STACK!r}:
+    _spec = importlib.util.find_spec(_name)
+    assert _spec is not None and _spec.origin.startswith({str(fake_root)!r}), (
+        f"failed to shadow {{_name}}: {{_spec}}"
+    )
+"""
+
+
+def _drive_and_report_modules(argv: list[str], *, patch: str, report: Path) -> str:
+    """Like :func:`_drive`, and write the torch-stack modules loaded at exit."""
+    return f"""
+{patch}
+import json
+from optica.cli.main import app
+sys.argv = ["optica"] + {argv!r}
+try:
+    app()
+finally:
+    Path({str(report)!r}).write_text(json.dumps(sorted(
+        m for m in sys.modules if m.partition(".")[0] in {_TORCH_STACK!r}
+    )), encoding="utf-8")
+"""
+
+
 class TestMilestone:
-    """`pip install -e .` then `optica --version`, with no torch installed."""
+    """`pip install -e .` then `optica --version`, with no torch installed.
 
-    def test_version_runs_without_torch(self, workspace):
-        result = _run_script(
-            _drive(["--version"]) + "\n", workspace
-        )
-        assert result.returncode == ExitCode.SUCCESS
+    Neither test reads whether this machine has torch. Each constructs the
+    torch condition it needs inside the subprocess and asserts the construction
+    took before driving the app, so the result is the same on a machine with the
+    torch stack installed (the pass 4 venv) and one without it (CI).
+    """
 
-    def test_no_torch_is_importable_in_this_environment(self):
-        # The milestone is only a real check while the venv has no torch.
-        result = subprocess.run(
-            [sys.executable, "-c", "import torch"],
-            capture_output=True,
-            text=True,
-            check=False,
+    def test_version_runs_with_the_torch_stack_absent(self, workspace):
+        result = _run_script(_drive(["--version"], patch=_HIDE_TORCH), workspace)
+        assert result.returncode == ExitCode.SUCCESS, result.stderr
+        assert "optica" in result.stdout
+
+    def test_version_never_imports_the_torch_stack(self, workspace, tmp_path):
+        # The torch stack is made present — a fake that shadows any real one —
+        # so an import guarded by `except ImportError` is caught too: it would
+        # succeed here and load the fake.
+        report = tmp_path / "loaded.json"
+        script = _drive_and_report_modules(
+            ["--version"], patch=_shadow_torch(tmp_path / "fake"), report=report
         )
-        assert result.returncode != 0
+        result = _run_script(script, workspace)
+        assert result.returncode == ExitCode.SUCCESS, result.stderr
+        assert json.loads(report.read_text(encoding="utf-8")) == [], result.stderr
 
     def test_the_installed_console_script_reports_the_same_version(self, workspace):
         from importlib import metadata

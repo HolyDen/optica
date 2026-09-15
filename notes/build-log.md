@@ -2896,3 +2896,41 @@ trailing check fails 6. Restored, 141 pass.
    `config/`, and ten test files). CI runs `ruff check` only, which is clean.
    Format drift has been accumulating unenforced since at least pass 3. Pass 6
    owns CI; whether to enforce formatting is its call.
+
+### The torch milestone test now constructs its condition
+**Pass:** 4, before checkpoint 1   **Date:** 2026-09-15   **Where:** `tests/integration/test_exit_codes.py::TestMilestone`
+**Found:** `test_no_torch_is_importable_in_this_environment` asserted that
+`import torch` fails in the running interpreter — an ambient fact about the
+machine, and the sixth instance of that defect in this build (after
+`running_in_venv` in pass 1 and `FORCE_COLOR` in pass 2). It failed locally once
+torch was installed for pass 4. Its sibling `test_version_runs_without_torch`
+had the same defect in quieter form: it ran `--version` under whatever torch the
+interpreter happened to have, so it only checked the milestone while the venv
+was torch-less. Both are replaced; neither is deleted or skipped.
+**Now:** both construct the torch condition inside the subprocess and assert
+the construction took before driving the app.
+- `test_version_runs_with_the_torch_stack_absent` — every finder on
+  `sys.meta_path` is wrapped so `torch`, `torchvision`, `timm`, `sklearn` and
+  `open_clip` are not found (`find_spec` → None, import → ModuleNotFoundError,
+  as on a machine that never installed them). Asserts `--version` exits 0.
+- `test_version_never_imports_the_torch_stack` — a recording fake of each of
+  those five packages is put first on `sys.path` so the stack is *present*,
+  shadowing any real one. After `--version`, asserts no module of the stack is in
+  `sys.modules`. This is the one that catches an import guarded by
+  `except ImportError`, which absence alone cannot see. The fake prints the
+  importing stack, so a failure names the importer. `importlib.util.find_spec`
+  alone does not load the fake, so detection without import stays legal.
+**Bite proven, on both kinds of machine.** Mutations to `cli/main.py`, each
+restored afterwards (`git status` clean in `src/`):
+
+| Mutation | `.venv` (torch 2.14.0 present) | scratch venv, Python 3.11.9, Core + test only, `find_spec` None for all five |
+|---|---|---|
+| none | 3 pass | 3 pass |
+| top-level `import torch` | absent + never-imports fail | absent + never-imports fail (+ console-script test) |
+| top-level `try: import timm / except ImportError` | never-imports fails | never-imports fails |
+| `try: import torchvision` inside `_version_callback` | never-imports fails | not run |
+
+The torch-less row is what the old tests could not do: in CI a guarded import
+would have passed both of them silently. The scratch venv was
+`python3.11 -m venv` in the session scratchpad plus
+`pip install -e "C:/dev/optica[test]"`; it touched nothing in the repo.
