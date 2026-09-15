@@ -123,15 +123,17 @@ class TestGlobalFlagsEitherPosition:
             ["train", "--verbose"],
         ],
     )
-    def test_verbose_is_accepted_before_or_after_the_command(self, argv):
+    def test_verbose_is_accepted_before_or_after_the_command(self, argv, project_dir):
         from optica.utils import logging as olog
 
         app.invoke_guarded(argv)
         assert olog.get_verbosity() is olog.Verbosity.VERBOSE
 
-    def test_dry_run_is_accepted_on_the_commands_that_take_it(self):
+    def test_dry_run_is_accepted_on_the_commands_that_take_it(self, project_dir):
         # fetch is real from pass 2: a dry run resolves and writes nothing.
         assert app.invoke_guarded(["fetch", "--dry-run", "-c", "cat,dog"]) == 0
+        # train is real from pass 4; in an empty project its dry run reports the
+        # missing dataset.
         for name in ("train", "export", "run"):
             assert app.invoke_guarded([name, "--dry-run"]) == ExitCode.ERROR
 
@@ -163,15 +165,18 @@ class TestConfigLoadsBeforeTheCommandActs:
 class TestLock:
     """Write commands take the global lock; it is released afterwards."""
 
-    def test_the_lock_is_released_when_the_stage_raises(self, fake_home):
+    def test_the_lock_is_released_when_the_stage_raises(self, fake_home, project_dir):
         from optica.utils.lockfile import lock_path
 
-        # `train` still raises inside the lock. (`fetch -c cat` used to, until
-        # pass 2 made fetch validate classes before taking it; see build-log.)
+        # `train` raises inside the lock: from pass 4, because the empty project
+        # has no dataset. (`fetch -c cat` used to, until pass 2 made fetch
+        # validate classes before taking it; see build-log.)
         assert app.invoke_guarded(["train"]) == ExitCode.ERROR
         assert not lock_path().exists()
 
-    def test_a_live_lock_blocks_a_write_command(self, fake_home, monkeypatch, capsys):
+    def test_a_live_lock_blocks_a_write_command(
+        self, fake_home, project_dir, monkeypatch, capsys
+    ):
         import json
 
         from optica.utils import lockfile

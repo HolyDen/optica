@@ -21,12 +21,15 @@ check before their stage begins.
 
 from __future__ import annotations
 
+import json
 import math
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -38,6 +41,7 @@ from optica.exceptions import (
     ExitCode,
     OpticaCurationError,
     OpticaError,
+    OpticaTrainingError,
     OpticaValidationError,
 )
 from optica.input import clip as clip_adapter
@@ -75,6 +79,7 @@ from optica.input.fetch import (
 from optica.input.local import (
     copy_into_dataset,
     copy_note,
+    load_organized_dataset,
     parse_manifest,
     preflight,
     require_flat_folder,
@@ -88,9 +93,13 @@ from optica.input.sessions import (
 )
 from optica.input.validation import (
     HARD_FLOOR,
+    SIZE_THRESHOLD,
     InPlaceReport,
     check_floor,
     check_floor_after_dedupe,
+    find_duplicates,
+    imbalanced_classes,
+    inspect_in_place,
     md5_of,
     reasons_summary,
 )
@@ -104,9 +113,26 @@ from optica.server.app import (
 )
 from optica.server.curation import CurationController
 from optica.server.labeling import LabelingController
+from optica.training import checkpoints
+from optica.training.engine import (
+    EpochMetrics,
+    allocate_phases,
+    finetune_ratio_warning,
+    phase2_skipped_by_one_epoch,
+)
+from optica.training.models import base_model_for
+from optica.training.splits import split_counts, training_data_hash
+from optica.training.trainer import (
+    TrainingInterrupted,
+    TrainOutcome,
+    TrainPlan,
+    TrainSettings,
+)
+from optica.training.trainer import train as run_training
 from optica.utils import logging as olog
 from optica.utils import prompts
 from optica.utils.lockfile import acquire_lock
+from optica.utils.mlstack import import_torch_stack, select_device
 from optica.utils.progress import progress_bar
 
 __all__ = ["TerminalClassPrompter", "classify_app"]
@@ -1350,7 +1376,7 @@ def train(
             options=list(MODELS),
             default="efficientnet-small",
         )
-    state.config(
+    resolved = state.config(
         overrides={
             "default_model": model,
             "epochs": epochs,
@@ -1364,9 +1390,558 @@ def train(
             "augmentation": "--no-augmentation",
         },
     )
+    requested = split_values(classes)
+    if requested:
+        requested = normalize_class_names(requested)
+    if state.dry_run:
+        _train_dry_run(resolved.config, dataset, manifest, output, requested)
+        return
     with acquire_lock("optica train"):
-        split_values(classes)
-        raise _not_yet("optica train")
+        _train_body(
+            state,
+            resolved,
+            requested,
+            dataset=dataset,
+            manifest=manifest,
+            output=output,
+            overwrite=overwrite,
+        )
+
+
+def _settings(config: OpticaConfig) -> TrainSettings:
+    return TrainSettings(
+        epochs=config.epochs,
+        batch_size=config.batch_size,
+        learning_rate=config.learning_rate,
+        augmentation=config.augmentation,
+        early_stopping=config.early_stopping,
+        finetune_ratio=config.finetune_ratio,
+        optimizer=config.optimizer,
+        train_split=config.train_split,
+        val_split=config.val_split,
+        test_split=config.test_split,
+        max_checkpoints=config.max_checkpoints,
+    )
+
+
+def _train_dry_run(
+    config: OpticaConfig,
+    dataset: Path,
+    manifest: Path | None,
+    output: Path,
+    requested: list[str],
+) -> None:
+    """What ``optica train`` would do. Reads the dataset's shape; writes nothing."""
+    if manifest is not None:
+        parsed = parse_manifest(manifest)
+        parsed.require_fully_labeled()
+        counts: dict[str, int] = {}
+        for row in parsed.rows:
+            assert row.class_name is not None
+            counts[row.class_name] = counts.get(row.class_name, 0) + 1
+        olog.status(f"Dataset: {dataset} (materialized from --manifest {manifest})")
+    else:
+        counts = load_organized_dataset(dataset).counts
+        olog.status(f"Dataset: {dataset}")
+    if requested:
+        input_manager.compare_classes(requested, sorted(counts))
+        counts = {name: counts[name] for name in requested}
+    settings = _settings(config)
+    phase1, phase2 = allocate_phases(settings.epochs, settings.finetune_ratio)
+    olog.status(
+        f"Model: {config.default_model} ({base_model_for(config.default_model)})"
+    )
+    olog.status(
+        f"Epochs: {settings.epochs} — {phase1} head warmup + {phase2} fine-tune"
+    )
+    olog.status(f"Batch size: {settings.batch_size}")
+    olog.status("Split per class (train/val/test):")
+    for name in sorted(counts):
+        n_train, n_val, n_test = split_counts(
+            counts[name], settings.val_split, settings.test_split
+        ) if counts[name] >= 2 else (counts[name], 0, 0)
+        olog.status(f"  {name}: {counts[name]} images → {n_train}/{n_val}/{n_test}")
+    olog.status(f"Checkpoints: ./{checkpoints.CHECKPOINTS_DIR}/")
+    olog.status(f"Training log: {output / 'logs'}")
+    olog.status("Dry run — nothing was trained or written.")
+
+
+def _ensure_output(state: GlobalState, output: Path) -> None:
+    """``--output`` as a container for the project-local training log.
+
+    For ``optica train`` the path is always a container — the log is the only
+    thing written there, so the export table's name-versus-container question
+    does not arise (``notes/build-log.md``). Absent: ``Create it? [Y/n]``, which
+    ``--yes`` confirms. A file: a hard error.
+    """
+    if output.is_dir():
+        return
+    if output.exists():
+        raise OpticaValidationError(
+            f"--output {output} is a file, not a folder.",
+            why="--output is the container for run outputs.",
+            fix="Choose a folder path: optica train --output ./optica-output",
+        )
+    prompts.confirm_or_abort(
+        f"--output {output} does not exist. Create it?",
+        default=True,
+        assume_yes=state.yes,
+        non_interactive_fix="Re-run with --yes to create it.",
+    )
+    output.mkdir(parents=True, exist_ok=True)
+
+
+_KADS_PENDING = Callable[[], None]
+
+
+def _checkpoint_housekeeping(
+    state: GlobalState, root: Path, max_checkpoints: int
+) -> _KADS_PENDING:
+    """The K/A/D/S prompt and the soft limit.
+
+    Returns the action, run just before training: nothing is moved or deleted
+    while a later check could still stop the run.
+    """
+    existing = checkpoints.rank(checkpoints.list_active(root))
+    if not existing:
+        return lambda: None
+    olog.err_console.print(
+        f"{len(existing)} checkpoint{'s' if len(existing) != 1 else ''} from earlier "
+        f"runs in {root}/:"
+    )
+    for item in existing[:10]:
+        olog.err_console.print(f"  {item.path.name}")
+    if len(existing) > 10:
+        olog.err_console.print(f"  (and {len(existing) - 10} more)")
+    choice = prompts.choose(
+        "What would you like to do?",
+        {
+            "K": "Keep all",
+            "A": f"Archive all (moved to {checkpoints.CHECKPOINTS_DIR}/"
+            f"{checkpoints.ARCHIVE_DIR}/<timestamp>/ before new training starts)",
+            "D": "Delete all",
+            "S": "Select — choose per checkpoint",
+        },
+        default="K",
+        assume_yes="K" if state.yes else None,
+        non_interactive_error=OpticaTrainingError,
+        non_interactive_fix="Re-run with --yes to keep them.",
+    )
+    to_archive: list[checkpoints.Checkpoint] = []
+    to_delete: list[checkpoints.Checkpoint] = []
+    if choice == "A":
+        to_archive = existing
+    elif choice == "D":
+        to_delete = existing
+    elif choice == "S":
+        for item in existing:
+            pick = prompts.choose(
+                item.path.name,
+                {"K": "Keep", "A": "Archive", "D": "Delete"},
+                default="K",
+                non_interactive_error=OpticaTrainingError,
+            )
+            (to_archive if pick == "A" else to_delete if pick == "D" else []).append(item)
+    kept = len(existing) - len(to_archive) - len(to_delete)
+    limit = checkpoints.soft_limit(max_checkpoints)
+    if kept > limit:
+        olog.warn(
+            f"{kept} checkpoints are kept in {root}/, more than {limit} "
+            f"(3 x max_checkpoints).",
+            why="Each run adds up to max_checkpoints more.",
+            fix="Archive or delete some at the next prompt, or remove folders by hand.",
+        )
+        prompts.confirm_or_abort(
+            "Continue?",
+            default=True,
+            assume_yes=state.yes,
+            non_interactive_fix="Re-run with --yes to continue.",
+        )
+
+    def act() -> None:
+        if to_archive:
+            target = checkpoints.archive(to_archive, root, datetime.now())
+            olog.status(f"Archived {len(to_archive)} checkpoints to {target}")
+        if to_delete:
+            checkpoints.delete(to_delete)
+            olog.status(f"Deleted {len(to_delete)} checkpoints.")
+
+    return act
+
+
+def _resume_prompt(state: GlobalState, root: Path) -> checkpoints.Checkpoint | None:
+    """Offer to continue the newest interrupted checkpoint. ``--yes``: Continue."""
+    candidate = checkpoints.resumable(checkpoints.list_active(root))
+    if candidate is None:
+        return None
+    total = candidate.info.get("config", {}).get("epochs", "?")
+    at = _interrupted_at(candidate)
+    olog.err_console.print(
+        f"Training was interrupted at epoch {at} of {total} ({candidate.path.name})."
+    )
+    if prompts.confirm(
+        "Continue from checkpoint?",
+        default=True,
+        assume_yes=state.yes,
+        non_interactive_error=OpticaTrainingError,
+        non_interactive_fix="Re-run with --yes to continue it.",
+    ):
+        return candidate
+    return None
+
+
+def _interrupted_at(candidate: checkpoints.Checkpoint) -> int:
+    """The epoch the run was in when interrupted.
+
+    Read from the run's log, which records it; ``checkpoint_info.json`` does not.
+    Falls back to the checkpoint's own epoch.
+    """
+    raw = candidate.info.get("log_file")
+    if isinstance(raw, str):
+        try:
+            data = json.loads(Path(raw).expanduser().read_text(encoding="utf-8"))
+            return int(data["interrupted_at_epoch"])
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    return candidate.epoch
+
+
+def _materialize_manifest(
+    state: GlobalState, manifest: Path, dataset: Path, *, overwrite: bool
+) -> Callable[[], None]:
+    """``train --manifest``: validate now, return the copy to run later.
+
+    The manifest must be fully labeled. The ``dataset/`` destination check fires
+    here, before any other prompt spends attention; the copy itself runs after
+    every question is answered.
+    """
+    parsed = parse_manifest(manifest)
+    parsed.require_fully_labeled()
+    _confirm_replace(state, dataset, "images from --manifest", overwrite=overwrite)
+    items = [(row.path, row.class_name) for row in parsed.rows if row.class_name]
+
+    def copy() -> None:
+        partial = input_manager.partial_destination(dataset)
+        if partial.exists():
+            shutil.rmtree(partial)
+        olog.status(copy_note((path for path, _ in items), dataset))
+        report = copy_into_dataset(items, partial)
+        try:
+            _report_unreadable(report.unreadable, "while copying")
+            before: dict[str, int] = {}
+            for _, name in items:
+                before[name] = before.get(name, 0) + 1
+            for bad in report.unreadable:
+                owner = next(n for p, n in items if p == bad.path)
+                before[owner] -= 1
+            check_floor(before)
+            check_floor_after_dedupe(
+                before, {name: report.copied.get(name, 0) for name in before}
+            )
+        except BaseException:
+            shutil.rmtree(partial, ignore_errors=True)
+            raise
+        input_manager.commit_dataset(partial, dataset)
+        olog.status(f"Materialized {report.total} images into {dataset}")
+
+    return copy
+
+
+def _ingest_dataset(dataset: Path, names: list[str]) -> dict[str, list[Path]]:
+    """Pre-flight and deduplicate ``--dataset`` in place, writing nothing.
+
+    Unreadable files are excluded and listed; convertible formats are used as
+    they stand; undersized images warn without being resized; byte-identical
+    duplicates within a class are excluded from the run. Then the five-image
+    floor, before and after deduplication.
+    """
+    organized = load_organized_dataset(dataset)
+    unreadable: list[InPlaceReport] = []
+    undersized = 0
+    readable: dict[str, list[Path]] = {}
+    for name in names:
+        for path in organized.classes[name]:
+            report = inspect_in_place(path)
+            if not report.readable:
+                unreadable.append(report)
+                continue
+            undersized += int(report.undersized)
+            readable.setdefault(name, []).append(path)
+        readable.setdefault(name, [])
+    _report_unreadable(unreadable, "in the dataset")
+    if undersized:
+        them = 'they are' if undersized != 1 else 'it is'
+        olog.warn(
+            f"{undersized} image{'s are' if undersized != 1 else ' is'} smaller than "
+            f"{SIZE_THRESHOLD}px and will be used as {them}.",
+            why="--dataset is read in place, so nothing is resized; upscaled "
+            "training inputs carry less detail than their size suggests.",
+        )
+    before = {name: len(paths) for name, paths in readable.items()}
+    check_floor(before)
+    unique: dict[str, list[Path]] = {}
+    removed = 0
+    for name, paths in readable.items():
+        kept, duplicates = find_duplicates(paths)
+        unique[name] = kept
+        removed += len(duplicates)
+    if removed:
+        olog.status(
+            f"{removed} duplicate image{'s' if removed != 1 else ''} left out of the run "
+            "(the files are untouched)."
+        )
+    check_floor_after_dedupe(before, {name: len(p) for name, p in unique.items()})
+    return unique
+
+
+class _RichReporter:
+    """Per-epoch progress bars and one status line per completed epoch."""
+
+    def __init__(self) -> None:
+        self._bar: Any = None
+        self._context: Any = None
+
+    def epoch_started(self, epoch: int, total: int, phase: int, batches: int) -> None:
+        label = "head warmup" if phase == 1 else "fine-tune"
+        self._context = progress_bar(f"Epoch {epoch}/{total} ({label})", total=batches)
+        self._bar = self._context.__enter__()
+
+    def batch_done(self) -> None:
+        if self._bar is not None:
+            self._bar.advance(self._bar.task_ids[0])
+
+    def epoch_finished(self, metrics: EpochMetrics) -> None:
+        if self._context is not None:
+            self._context.__exit__(None, None, None)
+            self._context = self._bar = None
+        olog.status(
+            f"  train loss {metrics.train_loss:.4f}  acc {metrics.train_accuracy:.3f}  "
+            f"│ val loss {metrics.val_loss:.4f}  acc {metrics.val_accuracy:.3f}"
+        )
+
+    def close(self) -> None:
+        if self._context is not None:
+            self._context.__exit__(None, None, None)
+            self._context = self._bar = None
+
+
+def _train_body(
+    state: GlobalState,
+    resolved: ResolvedConfig,
+    requested: list[str],
+    *,
+    dataset: Path,
+    manifest: Path | None,
+    output: Path,
+    overwrite: bool,
+) -> None:
+    config = resolved.config
+    project_root = Path.cwd()
+    ckpt_root = project_root / checkpoints.CHECKPOINTS_DIR
+
+    # --- Everything knowable before a question is asked. ------------------
+    copy_manifest: Callable[[], None] | None = None
+    if manifest is not None:
+        copy_manifest = _materialize_manifest(
+            state, manifest, dataset, overwrite=overwrite
+        )
+        names = sorted(parse_manifest(manifest).classes)
+    else:
+        names = sorted(load_organized_dataset(dataset).classes)
+    subset = input_manager.compare_classes(requested, names) if requested else None
+    # After the dataset checks, so a missing dataset is reported without the
+    # seconds torch takes to import; before any question, so a missing stack is.
+    import_torch_stack()
+    _ensure_output(state, output)
+
+    # --- Questions. --------------------------------------------------------
+    resume = _resume_prompt(state, ckpt_root)
+    housekeeping: Callable[[], None] = lambda: None  # noqa: E731
+    if resume is None:
+        housekeeping = _checkpoint_housekeeping(state, ckpt_root, config.max_checkpoints)
+    if subset is not None:
+        for line in subset.lines:
+            olog.err_console.print(line)
+        prompts.confirm_or_abort(
+            subset.question,
+            default=True,
+            assume_yes=state.yes,
+            non_interactive_fix="Re-run with --yes to train on the requested classes.",
+        )
+        names = sorted(requested)
+
+    if copy_manifest is not None:
+        copy_manifest()
+    files = _ingest_dataset(dataset, names)
+
+    if resume is not None:
+        settings = TrainSettings.from_json(resume.info.get("config", {}))
+        model_family = str(resume.info["model_family"])
+        if sorted(resume.info.get("classes", [])) != sorted(files):
+            raise OpticaTrainingError(
+                "The dataset's classes no longer match the interrupted run.",
+                why=f"Checkpoint: {', '.join(resume.info.get('classes', []))}. "
+                f"Now: {', '.join(sorted(files))}.",
+                fix="Answer n at the resume prompt to start a fresh run.",
+            )
+        if training_data_hash(dataset) != resume.info.get("training_data_hash"):
+            raise OpticaTrainingError(
+                "The dataset has changed since the interrupted run.",
+                why="Resuming would re-split a different set of files under the same "
+                "random_state, mixing training and validation images.",
+                fix="Answer n at the resume prompt to start a fresh run.",
+            )
+        class_weights = bool(resume.info.get("class_weights_applied"))
+        ignored = [
+            flag
+            for key, flag in resolved.flag_names.items()
+            if resolved.sources.get(key) is Source.FLAG
+        ]
+        if ignored:
+            olog.warn(
+                f"Resuming with the interrupted run's settings; {', '.join(ignored)} "
+                "ignored.",
+                why="A resumed run continues the configuration it was started with.",
+            )
+    else:
+        settings = _settings(config)
+        model_family = config.default_model
+        class_weights = _imbalance_prompt(state, files)
+        warning = finetune_ratio_warning(settings.finetune_ratio)
+        if warning:
+            olog.warn(warning)
+        if phase2_skipped_by_one_epoch(settings.epochs, settings.finetune_ratio):
+            prompts.confirm_or_abort(
+                "--epochs 1 leaves no epoch for fine-tuning, so Phase 2 is skipped. "
+                "Continue?",
+                default=True,
+                assume_yes=state.yes,
+                non_interactive_fix="Re-run with --yes to continue, or raise --epochs.",
+            )
+
+    device = select_device()
+    if device.type == "cpu" and settings.batch_size > CPU_BATCH_LIMIT:
+        smaller = 8
+        olog.warn(
+            f"Training on CPU with batch_size {settings.batch_size} may cause memory "
+            "issues on modest hardware.",
+            fix=f"Consider reducing: optica train --batch-size {smaller} or "
+            f"optica config --set batch_size {smaller}",
+        )
+        prompts.confirm_or_abort(
+            "Continue anyway? (n to adjust batch size)",
+            default=True,
+            category=prompts.PromptCategory.SAFETY,
+            assume_yes=state.yes,
+            force=state.force,
+            non_interactive_error=OpticaTrainingError,
+            non_interactive_fix="Re-run with --yes or --force to continue, or lower "
+            "--batch-size.",
+        )
+
+    # --- Actions. ------------------------------------------------------------
+    housekeeping()
+    plan = TrainPlan(
+        dataset_root=dataset,
+        files=files,
+        model_family=model_family,
+        settings=settings,
+        class_weights=class_weights,
+        project_root=project_root,
+        output=output,
+        resume_from=resume,
+    )
+    olog.status(
+        f"Training {model_family} on {sum(len(p) for p in files.values())} images "
+        f"across {len(files)} classes ({_device_description(device)})"
+    )
+    reporter = _RichReporter()
+    try:
+        outcome = run_training(plan, reporter, device=device, on_status=olog.status)
+    except TrainingInterrupted as interrupted:
+        reporter.close()
+        olog.incomplete(
+            f"Training incomplete — interrupted at epoch {interrupted.at_epoch}/"
+            f"{interrupted.total}; run optica train to continue from the last "
+            "checkpoint."
+        )
+        raise typer.Exit(code=ExitCode.INTERRUPTED) from None
+    finally:
+        reporter.close()
+    _report_training(outcome, project_root)
+
+
+CPU_BATCH_LIMIT = 16
+
+
+def _device_description(device: Any) -> str:
+    """Actual detected values, never internal shorthand."""
+    if device.type == "cuda":
+        import torch
+
+        return f"CUDA GPU: {torch.cuda.get_device_name(device)}"
+    if device.type == "mps":
+        return "Apple silicon GPU (MPS)"
+    return "CPU"
+
+
+def _imbalance_prompt(state: GlobalState, files: dict[str, list[Path]]) -> bool:
+    """The imbalance warning on a dataset the user brought: ``C``/``A`` only.
+
+    Standalone ``optica train`` cannot fetch, so ``[F]`` is not offered. ``--yes``
+    picks C. Returns whether class weighting was chosen.
+    """
+    counts = {name: len(paths) for name, paths in files.items()}
+    imbalance = imbalanced_classes(counts)
+    if imbalance is None:
+        return False
+    olog.warn("Class imbalance detected:")
+    for name, count in imbalance.counts.items():
+        olog.err_console.print(f"  {name}: {count} images")
+    choice = prompts.choose(
+        "Continue with automatic class weighting?",
+        {"C": "Continue with auto class weighting", "A": "Abort"},
+        default="C",
+        assume_yes="C" if state.yes else None,
+        non_interactive_error=OpticaTrainingError,
+        non_interactive_fix="Re-run with --yes to continue with class weighting.",
+    )
+    if choice == "A":
+        olog.incomplete("Training incomplete — aborted at the class-imbalance warning.")
+        raise typer.Exit(code=ExitCode.ABORTED)
+    return True
+
+
+def _report_training(outcome: TrainOutcome, project_root: Path) -> None:
+    """``✓ Training complete — best val_accuracy 0.852`` and its detail lines."""
+    best = outcome.best_val_accuracy
+    olog.success(
+        "Training complete — best val_accuracy "
+        + (f"{best:.3f}" if best is not None else "n/a")
+    )
+    epochs = f"  Epochs: {outcome.epochs_run} of {outcome.epochs_requested}"
+    if outcome.early_stopped:
+        epochs += f" (stopped early — val_loss, patience {outcome.patience})"
+    olog.status(epochs)
+    phase1, phase2 = outcome.phases
+    phases = f"  Phases: {phase1} head warmup + {phase2} fine-tune"
+    if outcome.phase1_stopped_early:
+        phases += f" (head warmup stopped early after {outcome.phases_run[0]})"
+    olog.status(phases)
+    n_classes = len(outcome.split_counts)
+    absent = len(outcome.classes_without_test)
+    if outcome.test_accuracy is None or absent == n_classes:
+        olog.status("  Test: not evaluated — no class received a test allocation")
+    else:
+        loss = outcome.test_loss if outcome.test_loss is not None else float("nan")
+        line = f"  Test: accuracy {outcome.test_accuracy:.3f}, loss {loss:.3f}"
+        if absent:
+            line += f" ({absent} class{'es' if absent != 1 else ''} absent from test set)"
+        olog.status(line)
+    olog.status(
+        f"  Checkpoints: {len(outcome.checkpoints)} saved in "
+        f"./{checkpoints.CHECKPOINTS_DIR}/"
+    )
 
 
 @classify_app.command()

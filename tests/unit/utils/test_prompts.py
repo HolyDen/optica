@@ -214,13 +214,11 @@ class TestPlanValuesStillToImplement:
         answer = self._prompter(yes=True).define("defective")
         assert answer == ["cracked_screen", "dented_case"]
 
-    @pytest.mark.skip(reason="stub - pass 4")
-    def test_checkpoint_prompt_offers_four_options_and_yes_picks_keep(self):
-        """K/A/D/S, not three options; `--yes` picks K — keep."""
-
-    @pytest.mark.skip(reason="stub - pass 4")
-    def test_cpu_batch_size_prompt_is_a_safety_prompt(self):
-        """`--yes` picks Y — continue; `--force` suppresses it."""
+    # The two pass-4 stubs that stood here — the checkpoint K/A/D/S prompt
+    # (four options; `--yes` picks K) and the CPU batch-size safety prompt
+    # (`--yes` continues; `--force` suppresses) — are real tests now, through the
+    # command: tests/unit/cli/test_train_command.py, TestCheckpointHousekeeping
+    # and TestCpuBatchSize.
 
     @pytest.mark.skip(reason="stub - pass 5")
     def test_yes_never_drives_optica_setup(self):
