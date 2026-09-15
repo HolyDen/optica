@@ -258,16 +258,19 @@ def fetch_more_refusal(name: str, home: Path | None = None) -> str | None:
     """Why Fetch More cannot run for ``name`` in this build, or None if it can.
 
     A grouped blocklist class was fetched as several sub-term queries, and its
-    images are CLIP-scored after the fetch — a stage that arrives with
-    ``input/clip.py``. An ordinary class was fetched as one query, its own name.
+    images are CLIP-scored after each fetch. ``optica fetch`` runs that stage
+    (``input/clip.py``, pass 4); Fetch More does not yet — it would need a
+    per-sub-term top-up target and the CLIP model loaded inside the curation
+    server (``notes/build-log.md``). An ordinary class was fetched as one query,
+    its own name.
     """
     root = staging_root(home)
     folder = root / name if (root / name).is_dir() else root / f"{name}.partial"
     queries = staged_queries(folder)
     if queries and queries != {name}:
         return (
-            f"{name} was fetched as a group of sub-terms, which needs CLIP filtering; "
-            "that is not available in this build."
+            f"{name} was fetched as a group of sub-terms, which needs CLIP filtering "
+            "after each fetch; Fetch More does not run it in this build."
         )
     return None
 

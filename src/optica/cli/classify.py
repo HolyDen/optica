@@ -40,6 +40,7 @@ from optica.exceptions import (
     OpticaError,
     OpticaValidationError,
 )
+from optica.input import clip as clip_adapter
 from optica.input import manager as input_manager
 from optica.input.classes import (
     Overlap,
@@ -69,6 +70,7 @@ from optica.input.fetch import (
     fetch_class,
     make_client,
     staged_classes,
+    staged_images,
 )
 from optica.input.local import (
     copy_into_dataset,
@@ -82,12 +84,14 @@ from optica.input.sessions import (
     LabelingSession,
     SourceType,
     load_labeling,
+    staging_root,
 )
 from optica.input.validation import (
     HARD_FLOOR,
     InPlaceReport,
     check_floor,
     check_floor_after_dedupe,
+    md5_of,
     reasons_summary,
 )
 from optica.server.app import (
@@ -324,8 +328,14 @@ class TerminalClassPrompter:
 # --- fetch --------------------------------------------------------------------
 
 
-def _report_fetch(reports: list[ClassFetchReport], source_name: str) -> None:
-    """The completion block. Nothing about the fetch is silent."""
+def _report_fetch(
+    reports: list[ClassFetchReport], source_name: str, *, final: bool = True
+) -> None:
+    """The completion block. Nothing about the fetch is silent.
+
+    ``final=False`` where a stage follows the fetch — CLIP filtering — so the
+    success line is that stage's to print.
+    """
     for report in reports:
         note = ""
         if report.exhausted and report.shortfall:
@@ -346,7 +356,10 @@ def _report_fetch(reports: list[ClassFetchReport], source_name: str) -> None:
             why="Upscaled images carry less detail than their size suggests.",
         )
     total = sum(r.staged for r in reports)
-    olog.success(f"Fetch complete — {total} images across {len(reports)} classes")
+    if final:
+        olog.success(f"Fetch complete — {total} images across {len(reports)} classes")
+    else:
+        olog.status(f"Fetched {total} candidate images across {len(reports)} classes")
 
 
 @classify_app.command()
@@ -446,12 +459,22 @@ def fetch(
         olog.status(f"Images per class: {config.images_per_class}")
         if blocklisted:
             olog.status(f"Needs a definition first: {', '.join(blocklisted)}")
-        olog.status("Destination: ~/.optica/staging/")
+        if resolved_mode.mode == "clip":
+            olog.status(
+                f"Candidates per class: {config.images_per_class} x "
+                f"{clip_adapter.OVERFETCH_FACTOR}, filtered at clip_threshold "
+                f"{config.clip_threshold}"
+            )
+            olog.status(f"Destination: {dataset}")
+        else:
+            olog.status("Destination: ~/.optica/staging/")
         olog.status("Dry run — nothing was fetched or written.")
         return
 
     with acquire_lock("optica fetch"):
-        _fetch_body(state, names, resolved_mode, resolved)
+        _fetch_body(
+            state, names, resolved_mode, resolved, dataset, overwrite=overwrite
+        )
 
 
 def _fetch_body(
@@ -459,8 +482,18 @@ def _fetch_body(
     names: list[str],
     resolved_mode: input_manager.ResolvedMode,
     resolved: ResolvedConfig,
+    dataset: Path,
+    *,
+    overwrite: bool,
 ) -> None:
     config = resolved.config
+    clip_mode = resolved_mode.mode == "clip"
+    if clip_mode:
+        # Clip mode is the one fetch path that writes `dataset/`, so the
+        # destination check runs first — before any request or prompt for work.
+        _confirm_replace(
+            state, dataset, "images kept by CLIP filtering", overwrite=overwrite
+        )
     client = make_client()
     try:
         context = SourceContext(
@@ -497,24 +530,34 @@ def _fetch_body(
         if not plan:
             raise typer.Exit(code=ExitCode.ABORTED)
         source.prepare([query for cls in plan for query in cls.queries])
-        if resolved_mode.mode == "clip" or any(cls.grouped for cls in plan):
-            raise _not_yet("CLIP filtering")
 
         olog.status(resolved_mode.line)
         olog.status(f"Source: {source.display_name}")
+        scorer: clip_adapter.ImageScorer | None = None
+        if clip_mode or any(cls.grouped for cls in plan):
+            # Loaded — its weights downloaded and verified — before any image is
+            # fetched, so a load failure costs no quota.
+            scorer = clip_adapter.load_clip(
+                report=olog.status,
+                quiet=olog.get_verbosity() <= olog.Verbosity.QUIET,
+            )
+        # Clip mode fetches twice the target, and keeps up to the target.
+        fetch_plan = (
+            [clip_adapter.overfetch(cls) for cls in plan] if clip_mode else plan
+        )
         existing = {s.name: s.images for s in staged_classes()}
         needed = {
             query: math.ceil(
                 max(0, cls.target - existing.get(cls.name, 0)) * CANDIDATE_SLACK
             )
-            for cls in plan
+            for cls in fetch_plan
             for query in cls.queries
         }
         source.warm({query: count for query, count in needed.items() if count})
 
         downloader = Downloader(client)
         reports: list[ClassFetchReport] = []
-        for cls in plan:
+        for cls in fetch_plan:
             with progress_bar(f"Fetching {cls.name}", total=cls.target) as bar:
                 task = bar.task_ids[0]
                 bar.advance(task, existing.get(cls.name, 0))
@@ -523,9 +566,144 @@ def _fetch_body(
                         cls, source, downloader, on_image=partial(bar.advance, task)
                     )
                 )
-        _report_fetch(reports, source.display_name)
+        source_name = source.display_name
     finally:
         client.close()
+
+    if scorer is None:
+        _report_fetch(reports, source_name)
+        return
+    _report_fetch(reports, source_name, final=False)
+    if clip_mode:
+        _clip_into_dataset(plan, scorer, config.clip_threshold, dataset)
+    else:
+        grouped = [cls for cls in plan if cls.grouped]
+        removed = _clip_grouped_staging(grouped, scorer, config.clip_threshold)
+        total = sum(r.staged for r in reports) - removed
+        olog.success(f"Fetch complete — {total} images across {len(reports)} classes")
+
+
+def _clip_score(
+    scorer: clip_adapter.ImageScorer,
+    cls: ResolvedClass,
+    threshold: float,
+    *,
+    keep: int | None,
+) -> clip_adapter.ClipFilterReport:
+    """Score one staged class against its prompts: its own name, or every sub-term."""
+    images = staged_images(staging_root() / cls.name)
+    class_prompts = [clip_adapter.prompt_for(query) for query in cls.queries]
+    with progress_bar(f"Scoring {cls.name}", total=len(images)) as bar:
+        scores = scorer.score(
+            images, class_prompts, on_image=partial(bar.advance, bar.task_ids[0])
+        )
+    return clip_adapter.select_survivors(
+        cls.name, list(zip(images, scores, strict=True)), threshold, keep
+    )
+
+
+def _report_clip(report: clip_adapter.ClipFilterReport) -> None:
+    """One class's post-filter line — a shortfall is visible, never silent."""
+    line = (
+        f"  {report.name}: {report.candidates} scored, {report.passed} at or "
+        f"above {report.threshold}, {report.kept} kept"
+    )
+    if report.unreadable:
+        line += f" ({report.unreadable} could not be read)"
+    olog.status(line)
+
+
+def _clip_into_dataset(
+    plan: list[ResolvedClass],
+    scorer: clip_adapter.ImageScorer,
+    threshold: float,
+    dataset: Path,
+) -> None:
+    """Clip mode's ingest: score each class, keep the best, write ``dataset/``.
+
+    Keeps up to each class's un-doubled target, best score first. Written into a
+    hidden sibling and committed in one move once every class is done, so a
+    failure leaves the old dataset exactly as it was; the destination check ran
+    at command start. MD5 deduplication runs again within each class. The
+    consumed staging is removed only after the commit, so a failure before it
+    leaves the fetched images for a re-run to resume from.
+    """
+    partial_dir = input_manager.partial_destination(dataset)
+    if partial_dir.exists():
+        shutil.rmtree(partial_dir)
+    olog.status(f"CLIP filtering at clip_threshold {threshold}:")
+    reports: list[clip_adapter.ClipFilterReport] = []
+    duplicates = 0
+    try:
+        for cls in plan:
+            report = _clip_score(scorer, cls, threshold, keep=cls.target)
+            folder = partial_dir / cls.name
+            # Created even when nothing passed, so an empty class reaches
+            # training's floor check by name instead of vanishing.
+            folder.mkdir(parents=True, exist_ok=True)
+            seen: set[str] = set()
+            written = 0
+            for path in report.kept_paths:
+                data = path.read_bytes()
+                digest = md5_of(data)
+                if digest in seen:
+                    duplicates += 1
+                    continue
+                seen.add(digest)
+                (folder / path.name).write_bytes(data)
+                written += 1
+            report.kept = written
+            reports.append(report)
+            _report_clip(report)
+    except BaseException:
+        shutil.rmtree(partial_dir, ignore_errors=True)
+        raise
+    input_manager.commit_dataset(partial_dir, dataset)
+    for cls in plan:
+        shutil.rmtree(staging_root() / cls.name, ignore_errors=True)
+
+    if duplicates:
+        olog.status(f"  {duplicates} duplicate images removed.")
+    short = [r for r in reports if r.shortfall]
+    if short:
+        olog.warn(
+            "Fewer images than requested passed CLIP filtering: "
+            + ", ".join(f"{r.name} kept {r.kept} of {r.target}" for r in short)
+            + ".",
+            why="Not an error — the imbalance warning and the 5-image floor decide "
+            "at training whether the dataset is usable.",
+        )
+    kept = sum(r.kept for r in reports)
+    olog.success(
+        f"Fetch complete — {kept} images kept across {len(reports)} classes "
+        f"in {dataset}"
+    )
+
+
+def _clip_grouped_staging(
+    grouped: list[ResolvedClass],
+    scorer: clip_adapter.ImageScorer,
+    threshold: float,
+) -> int:
+    """The grouped path under curate: filter each group's staging by its sub-terms.
+
+    Each image is scored against every sub-term and keeps the group's label. One
+    that reaches the threshold on no sub-term is removed from staging — silently,
+    per the deletion rule for auto-fetched images, with the count reported.
+    Nothing is capped: a person selects from what remains.
+
+    Returns:
+        How many staged images were removed.
+    """
+    olog.status(f"CLIP filtering grouped classes at clip_threshold {threshold}:")
+    removed = 0
+    for cls in grouped:
+        report = _clip_score(scorer, cls, threshold, keep=None)
+        for path in report.rejected_paths:
+            path.unlink(missing_ok=True)
+        removed += len(report.rejected_paths)
+        _report_clip(report)
+    return removed
 
 
 def _resume_or_start_fresh(state: GlobalState, names: list[str]) -> None:

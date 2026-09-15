@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -28,7 +29,7 @@ import pytest
 from PIL import Image
 
 from optica.cli.main import app
-from optica.exceptions import ExitCode
+from optica.exceptions import ExitCode, OpticaCLIPLoadError
 from optica.input import openimages as oi
 from tests.unit.input.test_openimages import LABEL_MAP, FakeGCS, _dataset
 
@@ -301,3 +302,203 @@ class TestResume:
         (other / "0001.jpg").write_bytes(b"x")
         app.invoke_guarded(["fetch", "-c", "cat,dog", "-i", "2", "--yes"])
         assert "Staging also holds images for bird" in capsys.readouterr().err
+
+
+# --- CLIP: clip mode, and the grouped path under curate ------------------------
+
+
+def _score_of(data: bytes) -> float:
+    """A deterministic pseudo-score in [0, 1) from an image's bytes."""
+    return int.from_bytes(hashlib.md5(data).digest()[:2], "big") / 65536
+
+
+class FakeScorer:
+    """Stands in for the CLIP model: scores by bytes, records every call."""
+
+    def __init__(self) -> None:
+        self.score_fn: Callable[[str, bytes], float] = lambda folder, data: _score_of(
+            data
+        )
+        self.interrupt_on: str | None = None
+        self.loads: list[bool] = []
+        # (class folder name, prompts, [(file name, bytes, score)])
+        self.calls: list[tuple[str, list[str], list[tuple[str, bytes, float]]]] = []
+
+    def score(self, images, prompts, *, on_image=None):
+        folder = images[0].parent.name if images else ""
+        if folder == self.interrupt_on:
+            raise KeyboardInterrupt
+        rows = []
+        for path in images:
+            data = path.read_bytes()
+            rows.append((path.name, data, self.score_fn(folder, data)))
+            if on_image is not None:
+                on_image()
+        self.calls.append((folder, list(prompts), rows))
+        return [score for _, _, score in rows]
+
+
+@pytest.fixture
+def clip_installed(monkeypatch):
+    """The clip extra is present — constructed, so CI (which never has it) agrees."""
+    monkeypatch.setattr("optica.input.manager.clip_available", lambda: True)
+
+
+@pytest.fixture
+def scorer(monkeypatch, clip_installed):
+    fake = FakeScorer()
+
+    def load_clip(*, report, device=None, quiet=False):
+        fake.loads.append(quiet)
+        return fake
+
+    monkeypatch.setattr("optica.input.clip.load_clip", load_clip)
+    return fake
+
+
+def _expected_kept(rows, threshold: float, keep: int) -> set[bytes]:
+    passing = sorted(
+        (row for row in rows if row[2] >= threshold), key=lambda r: (-r[2], r[0])
+    )
+    return {data for _, data, _ in passing[:keep]}
+
+
+def _dataset_bytes(folder: Path) -> set[bytes]:
+    return {p.read_bytes() for p in folder.iterdir() if p.is_file()}
+
+
+_CLIP = ["fetch", "-c", "cat,dog", "--mode", "clip", "--yes"]
+
+
+class TestClipMode:
+    """Plan § "CLIP Adapter (clip mode)", end to end with a fake model."""
+
+    def test_fetches_twice_the_target_and_keeps_the_best_passing(
+        self, world, fake_home, project_dir, scorer, capsys
+    ):
+        code = app.invoke_guarded([*_CLIP, "-i", "5"])
+        captured = capsys.readouterr()
+        assert code == ExitCode.SUCCESS, captured.err
+        assert [call[0] for call in scorer.calls] == ["cat", "dog"]
+        for name, prompts, rows in scorer.calls:
+            assert prompts == [f"a photo of a {name}"]
+            assert len(rows) == 10  # images_per_class x 2
+            kept = _dataset_bytes(project_dir / "dataset" / name)
+            assert kept == _expected_kept(rows, 0.25, 5)
+            passed = sum(1 for row in rows if row[2] >= 0.25)
+            assert f"{name}: 10 scored, {passed} at or above 0.25, 5 kept" in captured.out
+        # Consumed staging is gone; nothing partial is left beside the dataset.
+        assert not (_staging(fake_home) / "cat").exists()
+        assert not (project_dir / ".dataset.partial").exists()
+        assert "Fetch complete — 10 images kept across 2 classes" in captured.out
+        assert scorer.loads == [False]
+
+    def test_a_shortfall_is_reported_and_is_not_an_error(
+        self, world, project_dir, scorer, capsys
+    ):
+        scorer.score_fn = lambda folder, data: 0.0 if folder == "dog" else 0.9
+        code = app.invoke_guarded([*_CLIP, "-i", "5"])
+        captured = capsys.readouterr()
+        assert code == ExitCode.SUCCESS, captured.err
+        dog = project_dir / "dataset" / "dog"
+        assert dog.is_dir()  # present by name, so training's floor check names it
+        assert not any(dog.iterdir())
+        assert len(list((project_dir / "dataset" / "cat").iterdir())) == 5
+        assert "Fewer images than requested passed CLIP filtering" in captured.err
+        assert "dog kept 0 of 5" in captured.err
+
+    def test_a_populated_dataset_refuses_unattended_before_anything_runs(
+        self, world, project_dir, scorer, monkeypatch, capsys
+    ):
+        old = project_dir / "dataset" / "bird"
+        old.mkdir(parents=True)
+        (old / "keep.jpg").write_bytes(b"old")
+        monkeypatch.setattr("optica.utils.prompts.is_interactive", lambda: False)
+        assert app.invoke_guarded([*_CLIP, "-i", "5"]) == ExitCode.ERROR
+        assert "--overwrite" in capsys.readouterr().err
+        assert world.gcs.requests == []
+        assert world.image_requests == []
+        assert scorer.loads == []
+        assert (old / "keep.jpg").read_bytes() == b"old"
+
+    def test_overwrite_replaces_rather_than_merges(self, world, project_dir, scorer):
+        old = project_dir / "dataset" / "bird"
+        old.mkdir(parents=True)
+        (old / "keep.jpg").write_bytes(b"old")
+        code = app.invoke_guarded([*_CLIP, "-i", "3", "--overwrite"])
+        assert code == ExitCode.SUCCESS
+        names = sorted(p.name for p in (project_dir / "dataset").iterdir())
+        assert names == ["cat", "dog"]
+
+    def test_an_interrupt_while_scoring_leaves_the_old_dataset_and_the_staging(
+        self, world, fake_home, project_dir, scorer
+    ):
+        old = project_dir / "dataset" / "bird"
+        old.mkdir(parents=True)
+        (old / "keep.jpg").write_bytes(b"old")
+        scorer.interrupt_on = "dog"
+        code = app.invoke_guarded([*_CLIP, "-i", "3", "--overwrite"])
+        assert code == ExitCode.INTERRUPTED
+        assert (old / "keep.jpg").read_bytes() == b"old"
+        assert not (project_dir / "dataset" / "cat").exists()
+        assert not (project_dir / ".dataset.partial").exists()
+        # The fetched candidates survive for a re-run.
+        assert len(_images(_staging(fake_home) / "cat")) == 6
+        assert len(_images(_staging(fake_home) / "dog")) == 6
+
+    def test_the_model_loads_before_any_image_is_fetched(
+        self, world, project_dir, clip_installed, monkeypatch, capsys
+    ):
+        def broken(**kwargs):
+            raise OpticaCLIPLoadError("The CLIP weights failed to load.")
+
+        monkeypatch.setattr("optica.input.clip.load_clip", broken)
+        assert app.invoke_guarded([*_CLIP, "-i", "3"]) == ExitCode.ERROR
+        assert "The CLIP weights failed to load." in capsys.readouterr().err
+        assert world.image_requests == []
+
+    def test_dry_run_names_the_dataset_and_the_over_fetch(
+        self, world, fake_home, project_dir, scorer, capsys
+    ):
+        code = app.invoke_guarded(
+            ["fetch", "-c", "cat,dog", "-i", "5", "--mode", "clip", "--dry-run"]
+        )
+        out = capsys.readouterr().out
+        assert code == ExitCode.SUCCESS
+        assert "Candidates per class: 5 x 2, filtered at clip_threshold 0.25" in out
+        assert "Destination: dataset" in out
+        assert scorer.loads == []
+        assert world.image_requests == []
+
+
+class TestGroupedUnderCurate:
+    """Plan § "Undefinable classes in auto modes": CLIP runs after the fetch."""
+
+    def test_a_grouped_class_is_scored_against_every_sub_term_in_staging(
+        self, world, fake_home, project_dir, scorer, interactive, monkeypatch, capsys
+    ):
+        monkeypatch.setattr("typer.prompt", lambda *a, **k: "cat,dog")
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+        code = app.invoke_guarded(["fetch", "-c", "screwdriver,defective", "-i", "20"])
+        captured = capsys.readouterr()
+        assert code == ExitCode.SUCCESS, captured.err
+        # Only the grouped class is scored, and against both sub-terms.
+        [(name, prompts, rows)] = scorer.calls
+        assert (name, prompts) == ("defective", ["a photo of a cat", "a photo of a dog"])
+        assert len(rows) == 20  # 10 per sub-term: no over-fetch outside clip mode
+        folder = _staging(fake_home) / "defective"
+        remaining = {p.read_bytes() for p in folder.glob("0*")}
+        assert remaining == {data for _, data, score in rows if score >= 0.25}
+        assert 0 < len(remaining) < 20  # the filter did something, both ways
+        assert not (project_dir / "dataset").exists()
+        passed = len(remaining)
+        assert (
+            f"defective: 20 scored, {passed} at or above 0.25, {passed} kept"
+            in captured.out
+        )
+        total = passed + len(_images(_staging(fake_home) / "screwdriver"))
+        assert f"Fetch complete — {total} images across 2 classes" in captured.out
+
+    def test_no_grouped_class_means_no_model_load(self, world, scorer):
+        assert app.invoke_guarded(["fetch", "-c", "cat,dog", "-i", "2", "--yes"]) == 0
+        assert scorer.loads == []
