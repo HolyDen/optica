@@ -3087,3 +3087,171 @@ shape), `-m "not slow"`: 1248 passed, 28 skipped, 10 deselected. Ruff and mypy c
 repair path (constructed files only — no real corrupt download was staged);
 MPS.
 **Next:** checkpoint 2, `training/`.
+
+### `.venv` audited against the declared extras
+**Pass:** 4, before checkpoint 2   **Date:** 2026-09-15   **Where:** `notes/verified.md` § "What `.venv` holds…"
+Requested by the human after checkpoint 1's `open-clip-torch` install. Result:
+Core, `[web]`, `[clip]`, `[all]`, `[test]` and the setup-owned torch stack all
+fully installed and in range; no partial extras; only `pip` reached by no root.
+One finding worth pass 5 and `CLAUDE.md`'s owner: **real Click arrives with the
+torch stack**, through `huggingface_hub 1.31.0`'s unconditional
+`click<9.0.0,>=8.4.2` (required by timm and open-clip), not only through
+`[web]`'s uvicorn. `CLAUDE.md` is not edited here.
+
+### Checkpoint 2 — what the plan leaves open in `training/`, and what was assumed
+**Pass:** 4, checkpoint 2   **Date:** 2026-09-15   **Where:** `src/optica/training/`, `src/optica/cli/classify.py:train`
+
+**Decided because the human asked for a decision:**
+
+1. **mobilenet's `conv_head` is unfrozen in Phase 2.** `mobilenetv3_large_100`'s
+   `conv_head` (1,230,080 params, 29% of the model) sits after `global_pool`;
+   `norm_head` is an `Identity`. Read literally, l.1063's "last 3 blocks" leaves
+   it frozen in both phases, so Phase 2 fine-tunes `blocks.4–6` through a fixed
+   ImageNet projection. One rule now covers all four rows: *the named blocks, and
+   every parameterised module after them up to the classifier* — exactly the
+   amended efficientnet rows (`conv_head` + `bn2`), exactly `layer4` for resnet50,
+   and `+ conv_head` for mobilenet. The literal reading was rejected because the
+   14 September amendment added `bn2` for the same reason: a frozen layer between
+   trainable ones. **For the amendment session** — proposed l.1063 cell:
+   "Last 3 blocks (`blocks[4]`–`blocks[6]`) + `conv_head`". Test:
+   `test_models.py::test_mobilenet_phase2_includes_conv_head_and_not_blocks_3`.
+
+**Assumed under the gap rule (log and continue):**
+
+2. **Frozen BatchNorm stays in eval mode.** Train mode would rewrite running
+   statistics of frozen layers from tiny batches. Test asserts `bn1`'s running
+   mean does not move.
+3. **Float floors take a 1e-9 tolerance** (splits and phase allocation):
+   `100 × 0.29 = 28.999999999999996`, `20 × (1 − 0.9) = 1.9999999999999996`.
+   The plan states exact arithmetic; a bare `math.floor` would give 28 and 1.
+4. **Early stopping in Phase 1 ends Phase 1, not the run**, and fine-tuning
+   begins; in the last existing phase it ends the run, and only that sets
+   `early_stopped`. The plan says each phase has its own window and that
+   `early_stopped` means the run ended on patience. Recorded in the log as
+   `phase1_stopped_early`; the completion block's Phases line says so.
+5. **A checkpoint folder holds `checkpoint.pt`** = `{state_dict, optimizer_state}`,
+   tensors and primitives only, loadable `weights_only=True`. The plan names only
+   `checkpoint_info.json`.
+6. **`checkpoint_info.json` carries the six preprocessing values too**, so export
+   copies what training used instead of re-resolving with a possibly newer timm —
+   the plan's own reason for exporting them. **Its `config` block adds**
+   `optimizer`, `train_split`, `val_split`, `test_split`, `max_checkpoints`: a
+   resume must reproduce the split, and `random_state` alone cannot.
+7. **Accuracy in folder names is three decimals** (`checkpoint_val0.852_epoch7`),
+   as every plan example shows.
+8. **Top N is per run**, same ordering as export ranking; an epoch tying the worst
+   retained one replaces it (higher epoch wins ties). Test evaluation runs only
+   when a checkpoint is saved.
+9. **`interrupted_at_epoch` is the epoch in progress** (completed + 1). The resume
+   prompt reads it from the run's log (`log_file`), because
+   `checkpoint_info.json` does not carry it; falls back to the checkpoint epoch.
+10. **Resume continues from the newest interrupted checkpoint's epoch** — epochs
+    after it that were not top-N are trained again. It uses the checkpoint's
+    `config` block and model family, warns naming any flags given, keeps the
+    `run_id`, refuses when the classes or `training_data_hash` changed (the split
+    would silently re-mix), and on completion clears `interrupted` from every
+    retained checkpoint of the run.
+11. **Class weights: `total / (num_classes × count)` on the training split** —
+    what the loss sees.
+12. **Validation and test losses use the same (possibly weighted) criterion**
+    the run trains with, so early stopping monitors what is optimised.
+13. **Augmentation** — `Resize(floor(input/crop_pct))` → `RandomCrop` → flip
+    p=0.5 → rotation ±15° → `ColorJitter(0.2, 0.2, 0.2)`. The plan names the four
+    operations and ±15° only.
+14. **`num_workers = 0`** on every platform: Windows spawn re-imports the entry
+    point; one behaviour everywhere.
+15. **Standalone `optica train` offers C/A at the imbalance warning, never F** —
+    it cannot tell whether a dataset came from a fetch, and "on a dataset the user
+    brought" is the conservative reading.
+16. **The `--epochs 1` confirmation fires for any ratio strictly between 0 and 1**
+    that leaves Phase 2 empty — only reachable at `epochs = 1`. N exits 3.
+17. **`--output` is always a container for `optica train`**: absent → "Create
+    it? [Y/n]" (`--yes` Y), a file → hard error. The export table's N/C/A
+    name-versus-container prompt has nothing to decide when only the log is
+    written. Export (checkpoint 3) implements the full table.
+18. **Order of the command:** dataset shape and `--classes` typo (no torch) →
+    `import_torch_stack` → `--output` → resume → K/A/D/S + soft limit → subset
+    confirmation → manifest copy → pre-flight/dedupe/floor → imbalance → ratio
+    warnings, `--epochs 1` → CPU batch size → **K/A/D/S action** → train. The
+    archive/delete runs last, so a later refusal leaves checkpoints untouched.
+19. **`train --manifest`** validates full labeling and runs the `dataset/`
+    destination check first; the copy runs after every question.
+20. **A decode failure at training** raises `OpticaTrainingError` naming the file
+    (pass 3 handoff: header pre-flight passes some truncated JPEGs).
+
+**Modules added to the plan's tree:** `training/data.py` (dataset and loaders),
+`training/runlog.py` (the log), `training/trainer.py` (one classification run —
+where pass 5's API will call in), `utils/mlstack.py` (lazy torch-stack import,
+device selection moved out of `clip.py`, Hub handling). None imports torch at
+module level; the pass 1 milestone tests (constructed torch presence) still pass.
+
+**Not added:** timm weights get no first-use notice or verification, unlike
+CLIP's — the plan specifies both for CLIP and neither for timm, and timm's own
+download shows a progress bar.
+
+**Reversible?** Each is local to one function or constant.
+
+### Four more ambient-state tests, three of them mine
+**Pass:** 4, checkpoint 2   **Date:** 2026-09-15
+1. **`tests/unit/cli/test_classify.py`** — four pass-1 tests invoke bare
+   `optica train` expecting an error. That error used to be the stub; now it is
+   "no dataset", which holds only while the **repo root** has no `./dataset/`.
+   They now take `project_dir` (an empty project). Found because the first
+   version of `_train_body` imported torch before checking the dataset, which
+   leaked torch into the pytest process and failed `test_main.py`'s and
+   `config/test_init.py`'s `"torch" not in sys.modules` tests — those two are the
+   same shared-`sys.modules` defect as `test_system.py`'s, fixed only indirectly
+   here (torch now loads after the dataset check). **Logged, not rewritten:** they
+   still read ambient `sys.modules` and will fail again the day any fast test
+   imports torch in-process. The subprocess form in `test_system.py` is the fix.
+2. **`test_mlstack.py::test_a_server_warning_prints_once_not_twice`** (mine)
+   passed alone and failed in the suite twice over: an earlier `--quiet` left the
+   root logger at ERROR, and earlier CLI tests left root handlers on closed
+   capture streams. It now sets the Hub logger's level and replaces the root's
+   handlers.
+
+### `ImageListDataset` / `DataLoader` and the stubs
+**Pass:** 4, checkpoint 2   **Date:** 2026-09-15
+Pass-4 stubs resolved: `test_defaults.py::test_finetune_ratio_extremes_warn` is
+real; `test_prompts.py`'s K/A/D/S and CPU batch-size stubs are replaced by a
+pointer to `test_train_command.py::TestCheckpointHousekeeping` and
+`TestCpuBatchSize`, which exercise them through the command. Still stubs:
+`test_classify.py::test_checkpoint_rank_absence_prompts_rather_than_meaning_rank_1`
+(export — checkpoint 3) and `test_run_checks_required_extras_up_front` (pass 5).
+
+### Checkpoint 2 — state
+**Pass:** 4   **Date:** 2026-09-15
+**Built:** `training/` — `splits.py`, `models.py`, `transforms.py`,
+`checkpoints.py`, `runlog.py`, `data.py`, `engine.py`, `trainer.py`;
+`utils/mlstack.py`; `optica train` in `cli/classify.py`. `select_device` moved
+from `input/clip.py` to `utils/mlstack.py`; the MPS entry above now points there.
+**Tests:** `.venv`, slow included: 2118 passed, 12 skipped (2130 collected).
+`.venv`, `-m "not slow"`: 2045 passed, 12 skipped, 73 deselected (2130). Torch-less
+scratch venv, `-m "not slow"`: 1983 passed, 26 skipped, 73 deselected (2082
+collected — module-level skips of the web-extra modules count once there). Ruff
+clean; mypy clean in both venvs.
+**Mutation checks — 28 run, 28 bite** (`scratchpad/mutate_train.py`, each run
+against the named test files, source restored after each):
+
+| Area | Mutations | Bite |
+|---|---|---|
+| splits and hash | n_val minimum; float tolerance; OS separators | 3 / 3 |
+| phase allocation and loop | phase1 minimum; Phase 2 LR; boundary reset; `<=` on improvement; `early_stopped` on a Phase 1 trip | 5 / 5 |
+| models | `bn2` dropped; mobilenet `conv_head` dropped; frozen BN in train mode | 3 / 3 |
+| checkpoints | epoch tie-break; timestamp tie-break; archive in collision check; run end keeps `interrupted` | 4 / 4 |
+| trainer | top-N never evicts; class-weight formula; interrupt unmarked; resume without weights | 4 / 4 |
+| transforms, data | round vs floor; decode error unwrapped | 2 / 2 |
+| CLI | housekeeping acts at the prompt; CPU prompt not SAFETY; duplicates kept; torch before dataset checks; changed dataset resumes; **K/A/D/S not skipped on resume** | 6 / 6 |
+| QuickGELU (checkpoint 1, re-run) | — | — |
+
+**The K/A/D/S-on-resume mutation survived the first run** (27 of 28 at first):
+the test asserted the menu's absence under `--yes`, where `choose()` answers
+without printing it. Rewritten to run interactively and record every question;
+the mutation now fails it. Totals: 3 + 5 + 3 + 4 + 4 + 2 + 6 = 27 source
+mutations plus the rewritten test's re-check = 28 runs.
+**Live:** one smoke run (`notes/verified.md`), not the milestone.
+**Not exercised:** MPS; CPU training end to end on this machine (tests run the
+trainer on `torch.device("cpu")` with `pretrained=False` — the CLI's CPU path is
+tested with a fake trainer); `train --manifest` against the real trainer; a real
+Ctrl+C at a terminal (interruption is raised from the reporter in tests).
+**Next:** checkpoint 3, `export/`.

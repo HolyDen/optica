@@ -1421,3 +1421,104 @@ scikit-learn; this entry is what a correct result looks like on CPython 3.11 /
 Windows / CUDA 13.0 — including the six distributions only scikit-learn brings,
 and real Click arriving with timm. The `except click.*` hazard `CLAUDE.md`
 describes is live on every machine that can train, not only web installs.
+
+### timm 1.0.29: the head, the top-level modules, and mobilenet's post-pool layers
+**Date:** 2026-09-15
+**How:** `.venv` (torch 2.14.0+cu130, timm 1.0.29), `scratchpad/timm_probe.py`:
+`timm.create_model(name, pretrained=False)`, `named_children()` with parameter
+counts, `reset_classifier(num_classes=3)` compared key-for-key and shape-for-shape
+with `create_model(name, pretrained=False, num_classes=3).state_dict()`,
+`get_classifier()`, `resolve_model_data_config()`, BatchNorm module names.
+Extends § task 4; does not re-derive it — task 4's numbers are used as they stand.
+**Result:**
+
+| Model | `reset_classifier(3)` keys == `create_model(num_classes=3)` | shapes equal | keys | classifier |
+|---|---|---|---|---|
+| efficientnet_b0 | True | True | 360 | `Linear` → 3 |
+| efficientnet_b4 | True | True | 706 | `Linear` → 3 |
+| resnet50 | True | True | 320 | `Linear` → 3 |
+| mobilenetv3_large_100 | True | True | 312 | `Linear` → 3 |
+
+Top-level parameter counts not in task 4 (ImageNet heads, before replacement):
+
+| Model | module | type | params |
+|---|---|---|---|
+| efficientnet_b0 | `bn2` | BatchNormAct2d | 2,560 |
+| efficientnet_b4 | `bn2` | BatchNormAct2d | 3,584 |
+| mobilenetv3_large_100 | `conv_head` (after `global_pool`) | Conv2d, with bias | **1,230,080** |
+| mobilenetv3_large_100 | `norm_head` | **Identity** | 0 |
+| mobilenetv3_large_100 | `act2`, `flatten` | Hardswish, Flatten | 0 |
+
+mobilenet total 4,205,875 (task 4): `conv_head` is 29.2% of it. Last three
+BatchNorm modules: b0 `blocks.6.0.bn2`, `blocks.6.0.bn3`, `bn2`; resnet50
+`layer4.2.bn1/bn2/bn3`; mobilenet `blocks.5.2.bn2`, `blocks.5.2.bn3`,
+`blocks.6.0.bn1`.
+**Consequence:** `training/models.py` uses `reset_classifier` and finds the
+head through `get_classifier()`; mobilenet's Phase 2 adds `conv_head` (build log).
+`tests/unit/training/test_models.py` asserts every Phase 2 total against these
+numbers.
+
+### Evaluation preprocessing equals timm's own eval transform
+**Date:** 2026-09-15
+**How:** `tests/unit/training/test_transforms.py::TestTransforms::test_evaluation_matches_timms_own_eval_transform`
+— a 300×420 random RGB image through Optica's torchvision pipeline
+(`Resize(floor(input/crop_pct), bicubic)` → `CenterCrop(input)` → `ToTensor` →
+`Normalize`) and through `timm.data.create_transform(**resolve_model_data_config(model), is_training=False)`.
+**Result:** `torch.allclose(atol=1e-6)` for efficientnet_b0 (256→224),
+resnet50 (235→224) and efficientnet_b4 (365→320).
+**Consequence:** the transform `usage_examples.md` will teach at export is the
+one timm itself uses for these configs.
+
+### timm's pretrained weights on the Hugging Face Hub, per backbone
+**Date:** 2026-09-15
+**How:** `HfApi().model_info(<pretrained_cfg["hf_hub_id"]>, files_metadata=True)`
+for each backbone's default tag.
+**Result:** all public, not gated, licence apache-2.0.
+
+| Backbone | Repo | Revision | `model.safetensors` bytes | SHA-256 |
+|---|---|---|---|---|
+| efficientnet_b0 | `timm/efficientnet_b0.ra_in1k` | `1b5383e5f79c` | 21,355,344 | `d569899762ea9b1384ee07f4af64805cf8caa1c55f9253ebb1080dc40e87a2cd` |
+| efficientnet_b4 | `timm/efficientnet_b4.ra2_in1k` | `442c00e15609` | 77,933,206 | `8030f9c929ed71a06728db4b61323960e573b463e68f310bd1bfb31ed62cbf91` |
+| resnet50 | `timm/resnet50.a1_in1k` | `767268603ca0` | 102,469,840 | `773525d5821de224f8f30c33377b7a795d7863e08522698200d3217d3f2a41bb` |
+| mobilenetv3_large_100 | `timm/mobilenetv3_large_100.ra_in1k` | `96f46a1c5293` | 22,058,321 | `f425af34cc1cead2b5d6211f789a1f30b94835dc32f9c0fcc5a916e4fd2dde85` |
+
+Sum of the four: 223,816,711 bytes (21.4 + 77.9 + 102.5 + 22.1 MB). Each repo
+also carries a `pytorch_model.bin` 72.5–169.3 kB larger (b0 +86,561; b4 +169,319;
+resnet50 +75,389; mobilenet +72,512 bytes).
+**Consequence:** a first `optica train` downloads one of these (22–102 MB). The
+plan gives timm weights no first-use notice or verification rule, unlike CLIP's;
+none is added (build log).
+
+### The "unauthenticated requests" warning is server-sent, and why it printed twice
+**Date:** 2026-09-15
+**How:** `grep` over `huggingface_hub 1.31.0` found no such string;
+`huggingface_hub/utils/_http.py:_warn_on_warning_headers` logs the text of an
+`X-HF-Warning` response header through the `huggingface_hub` logger, once per
+topic per process. `huggingface_hub/utils/logging.py:_configure_library_root_logger`
+adds its own `StreamHandler`; Optica's `configure_stdlib_logging` adds a root
+handler via `basicConfig(force=True)`.
+**Result:** the record went to the Hub's handler (bare text) and propagated to
+the root handler (`WARNING huggingface_hub.utils._http: …`). The Hub's own
+`disable_propagation()` docstring says propagation is off by default; on this
+install the logger's `propagate` was True — the double print proves it.
+**Consequence:** `utils/mlstack.py:prepare_hub` sets
+`logging.getLogger("huggingface_hub").propagate = False` — one print, not
+silenced. It also has to run *before* `import timm`, because timm imports the
+Hub, which reads `HF_HUB_DISABLE_SYMLINKS_WARNING` at import: the first smoke run
+still printed the symlink warning until `import_torch_stack` called it first.
+
+### Smoke run — `optica train` on the clip-mode dataset
+**Date:** 2026-09-15
+**How:** `.smoke/pass4-live/train-smoke/`, dataset copied from `clip2/dataset`
+(cat 25, dog 25), private home, `optica train --epochs 3 --yes`. Log `smoke1.log`.
+**Result:** exit 0 in 15.9 s wall on `CUDA GPU: NVIDIA GeForce RTX 4070 Ti`.
+Split per class 19/3/3 (25 → `n_val = floor(3.75) = 3`, `n_test = min(3, 21) = 3`,
+19 + 3 + 3 = 25). Phases 1 + 2. Epochs: val_accuracy 1.000 all three; train
+accuracy 0.526 → 0.763 → 0.868. Test accuracy 0.833, loss 0.619 (best
+checkpoint, 6 test images). Three checkpoints retained; `checkpoint.pt` 16.4 MB
+at epoch 1 (Phase 1 optimizer state: head only) and 41.7 MB at epoch 2 (Phase 2
+state for the unfrozen groups). `torch.load(..., weights_only=True)` loads it;
+keys `state_dict` (360 tensors, `classifier.weight`/`classifier.bias`) and
+`optimizer_state`. Both log copies byte-identical.
+**Consequence:** not the checkpoint 4 milestone — a smoke run, before the tests
+were written. It found the symlink-warning ordering above.
