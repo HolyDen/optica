@@ -289,9 +289,9 @@ class TestPlanValuesStillToImplement:
         assert "Mode: label (default for local input)" in captured.out
         assert "requires fetched input" not in captured.err
 
-    @pytest.mark.skip(reason="stub - pass 4")
-    def test_checkpoint_rank_absence_prompts_rather_than_meaning_rank_1(self):
-        """`--yes` answers that prompt with rank 1."""
+    # The pass-4 stub that stood here — `--checkpoint-rank` absence prompts
+    # rather than meaning rank 1, and `--yes` answers with rank 1 — is real now:
+    # tests/unit/cli/test_export_command.py, TestSelection.
 
     @pytest.mark.skip(reason="stub - pass 4")
     def test_run_checks_required_extras_up_front(self):

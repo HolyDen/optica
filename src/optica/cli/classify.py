@@ -44,6 +44,7 @@ from optica.exceptions import (
     OpticaTrainingError,
     OpticaValidationError,
 )
+from optica.export import manager as export_manager
 from optica.input import clip as clip_adapter
 from optica.input import manager as input_manager
 from optica.input.classes import (
@@ -1953,7 +1954,14 @@ def export(
         "--checkpoint",
         help="Checkpoint rank(s) to export, comma-separated. Absence prompts.",
     ),
-    output: Path = _Output,
+    output: str = typer.Option(
+        "./optica-output",
+        "--output",
+        "-o",
+        # A str, not a Path: Path drops the trailing slash that decides whether a
+        # multi-component path is a container.
+        help="Container folder for run outputs.",
+    ),
     verbose: bool = _Verbose,
     quiet: bool = _Quiet,
     yes: bool = _Yes,
@@ -1970,11 +1978,239 @@ def export(
         dry_run=dry_run,
     )
     state.config()
+    # Absence is *not* rank 1: it raises the checkpoint selection prompt, which
+    # `--yes` answers with rank 1.
+    values = split_values(checkpoint_rank)
+    if state.dry_run:
+        _export_dry_run(values, output)
+        return
     with acquire_lock("optica export"):
-        # Absence is *not* rank 1: it raises the checkpoint selection prompt,
-        # which `--yes` answers with rank 1.
-        split_values(checkpoint_rank)
-        raise _not_yet("optica export")
+        _export_body(state, values, output)
+
+
+def _export_dry_run(values: list[str], output: str) -> None:
+    """What ``optica export`` would write. No prompt, no torch, nothing written."""
+    project_root = Path.cwd()
+    ranked = export_manager.ranked_checkpoints(project_root)
+    ranks = export_manager.parse_ranks(values, len(ranked)) if values else None
+    olog.status("Checkpoints, best first:")
+    for item in ranked:
+        olog.status(_ranked_line(item))
+    if ranks is None:
+        olog.status("Rank: not given — the selection prompt would ask; --yes picks 1")
+        ranks = [1]
+    situation = export_manager.classify_output(output)
+    olog.status(f"Output: {output} ({_SITUATION_TEXT[situation]})")
+    moment = datetime.now().replace(microsecond=0)
+    for rank in ranks:
+        info = ranked[rank - 1].checkpoint.info
+        name = export_manager.folder_name(
+            str(info.get("model_family")),
+            int(info.get("num_classes", 0)),
+            moment,
+            rank,
+            with_rank=rank != 1 or len(ranks) > 1,
+        )
+        olog.status(
+            f"  rank {rank} -> {name}/: model.pt, class_names.json, "
+            "model_info.json, usage_examples.md"
+        )
+    olog.status("Dry run — nothing was exported or written.")
+
+
+_SITUATION_TEXT: dict[export_manager.OutputSituation, str] = {
+    export_manager.OutputSituation.CONTAINER: "existing folder",
+    export_manager.OutputSituation.IS_FILE: "a file — this would be an error",
+    export_manager.OutputSituation.CREATE: "does not exist — would ask to create it",
+    export_manager.OutputSituation.NAME_OR_CONTAINER: (
+        "does not exist — would ask: export name or container"
+    ),
+}
+
+
+def _ranked_line(item: export_manager.Ranked) -> str:
+    info = item.checkpoint.info
+    test = info.get("test_accuracy")
+    test_text = f"{test:.3f}" if isinstance(test, int | float) else "n/a"
+    return (
+        f"  {item.rank}  {item.checkpoint.path.name}   val_accuracy "
+        f"{item.checkpoint.val_accuracy:.3f}   test_accuracy {test_text}   "
+        f"run {item.checkpoint.run_id}"
+    )
+
+
+def _with_output(argv: list[str], value: str) -> str:
+    """The invocation with ``--output`` set to ``value``, every other flag kept."""
+    out: list[str] = []
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+            continue
+        if arg in ("--output", "-o"):
+            skip = True
+            continue
+        if arg.startswith("--output="):
+            continue
+        out.append(arg)
+    return "optica " + " ".join([*out, "--output", value])
+
+
+def _resolve_export_output(state: GlobalState, raw: str) -> tuple[Path, str | None]:
+    """``--output`` per the plan's table: ``(container, export name or None)``.
+
+    Asked before anything is written.
+    """
+    situation = export_manager.classify_output(raw)
+    path = Path(raw)
+    if situation is export_manager.OutputSituation.IS_FILE:
+        raise OpticaValidationError(
+            f"--output {raw} is a file, not a folder.",
+            why="--output is the container for run outputs.",
+            fix=_with_output(state.argv, "./optica-output"),
+        )
+    if situation is export_manager.OutputSituation.CREATE:
+        prompts.confirm_or_abort(
+            f"--output {raw} does not exist. Create it?",
+            default=True,
+            assume_yes=state.yes,
+            non_interactive_fix="Re-run with --yes to create it.",
+        )
+        path.mkdir(parents=True, exist_ok=True)
+    elif situation is export_manager.OutputSituation.NAME_OR_CONTAINER:
+        as_container = raw.rstrip("/" + chr(92)) + "/"
+        if state.yes or not prompts.is_interactive():
+            raise OpticaValidationError(
+                f"--output {raw} does not exist, and it could name a folder to create "
+                "or the export itself.",
+                why="Several path components with no trailing slash are ambiguous, and "
+                "--yes cannot choose between two different results.",
+                fix=[
+                    "To create it as a container, add a trailing slash:",
+                    _with_output(state.argv, as_container),
+                    f"To use {path.name} as the export's name inside {path.parent}, run "
+                    "without --yes in a terminal and answer N.",
+                ],
+            )
+        choice = prompts.choose(
+            f"--output {raw} does not exist.",
+            {
+                "N": f"Name — export as {path.name}/ inside {path.parent}/",
+                "C": f"Container — create {raw} and export into it",
+                "A": "Abort",
+            },
+            default="C",
+        )
+        if choice == "A":
+            raise typer.Exit(code=ExitCode.ABORTED)
+        if choice == "N":
+            path.parent.mkdir(parents=True, exist_ok=True)
+            export_manager.require_writable(path.parent)
+            return path.parent, path.name
+        path.mkdir(parents=True, exist_ok=True)
+    export_manager.require_writable(path)
+    return path, None
+
+
+def _selection_prompt(
+    state: GlobalState, ranked: list[export_manager.Ranked]
+) -> list[int]:
+    """The export checkpoint selection prompt. ``--yes`` picks rank 1.
+
+    Accepts several ranks, comma-separated; an invalid answer is explained and
+    asked again.
+    """
+    if state.yes:
+        return [1]
+    if not prompts.is_interactive():
+        raise OpticaValidationError(
+            "Which checkpoint to export needs an answer, and there is no terminal to "
+            "ask on.",
+            why="Without --checkpoint-rank, optica export asks which checkpoint to use.",
+            fix=[
+                "Name the rank: " + _with_rank(state.argv, "1"),
+                "or re-run with --yes to export rank 1.",
+            ],
+        )
+    olog.err_console.print("Checkpoints, best first:")
+    for item in ranked:
+        olog.err_console.print(_ranked_line(item))
+    while True:
+        answer: str = typer.prompt(
+            "Export which checkpoint? Rank, or several comma-separated", default="1"
+        )
+        try:
+            return export_manager.parse_ranks(split_values([answer]), len(ranked))
+        except OpticaValidationError as exc:
+            for line in [exc.message, *exc.fix]:
+                olog.err_console.print(f"  {line}")
+
+
+def _with_rank(argv: list[str], value: str) -> str:
+    return "optica " + " ".join([*argv, "--checkpoint-rank", value])
+
+
+def _export_body(state: GlobalState, values: list[str], raw_output: str) -> None:
+    project_root = Path.cwd()
+    # --- Everything knowable before a question is asked. ------------------
+    ranked = export_manager.ranked_checkpoints(project_root)
+    ranks = export_manager.parse_ranks(values, len(ranked)) if values else None
+    import_torch_stack()
+
+    # --- Questions. --------------------------------------------------------
+    container, export_name = _resolve_export_output(state, raw_output)
+    if ranks is None:
+        ranks = _selection_prompt(state, ranked)
+
+    for rank in ranks:
+        item = ranked[rank - 1]
+        for stale in export_manager.stale_checkpoint_paths(item.checkpoint, project_root):
+            olog.warn(
+                f"Checkpoint path no longer exists: {stale}",
+                why="It may have been archived or deleted. Check "
+                f"{checkpoints.CHECKPOINTS_DIR}/{checkpoints.ARCHIVE_DIR}/",
+            )
+        if export_manager.missing_run_end(item.checkpoint):
+            olog.warn(
+                f"{item.checkpoint.path.name} is from a run that did not finish.",
+                why="epochs_trained and early_stopped are written at run end, so "
+                "model_info.json records them as null.",
+            )
+
+    # --- Actions. ------------------------------------------------------------
+    for removed in export_manager.clean_stale_partials(container):
+        olog.detail(f"Removed an interrupted export: {removed.name}")
+    moment = datetime.now().replace(microsecond=0)
+    records = []
+    for rank in ranks:
+        item = ranked[rank - 1]
+        with_rank = rank != 1 or len(ranks) > 1
+        if export_name is not None:
+            base = f"{export_name}_ckpt{rank}" if with_rank else export_name
+        else:
+            base = export_manager.folder_name(
+                str(item.checkpoint.info.get("model_family")),
+                int(item.checkpoint.info.get("num_classes", 0)),
+                moment,
+                rank,
+                with_rank=with_rank,
+            )
+        name = export_manager.unique_name(container, base)
+        records.append(
+            export_manager.export_checkpoint(
+                item,
+                of=len(ranked),
+                container=container,
+                name=name,
+                moment=moment,
+                project_root=project_root,
+            )
+        )
+    for record in records:
+        olog.success(
+            f"Export complete — rank {record.rank} of {len(ranked)} to {record.folder}"
+        )
+        olog.status(f"  Files: {', '.join(record.files)}")
 
 
 @classify_app.command()
