@@ -3510,3 +3510,36 @@ correction and this close (23 + 4 = 27).
   trainer.
 
 **Pass 4 is complete.** Next: the amendment session, then pass 5.
+
+### The Click sentence is now a rule, after three corrections
+**Pass:** between 4 and 5   **Date:** 2026-09-15   **Where:** `CLAUDE.md` § "Settled points that the plan leaves implicit"
+**Found:** pass 4 established a second route by which real Click reaches the
+environment — `huggingface_hub` brings it with the torch stack, not only
+uvicorn with `optica[web]`. The sentence was wrong in shape rather than in
+fact: it named one exception where there were two, and any dependency bump can
+add a third.
+**Action taken:** the enumeration is replaced by the rule — *never rely on
+Click's absence* — with both known routes given as examples rather than as the
+list. The instruction is unchanged for the fourth time running: use `typer`'s
+equivalents, never `click.*`.
+**The pattern is the finding.** This is the third correction to one sentence:
+- 2026-09-13 — the original premise, *"they arrive transitively through `typer`
+  and `pydantic-settings`"*, was half false. Typer vendors Click as
+  `typer._click` and declares no dependency on it.
+- 2026-09-14 — the correction said `import click` fails in a Core install,
+  which is true and incomplete. `optica[web]` admits real Click, so the failure
+  stops being loud.
+- 2026-09-15 — this entry. A second route appeared, and a list of exceptions
+  will keep going stale for as long as the dependency tree moves.
+
+Each correction was true when written and each was falsified by the next pass
+touching a wider slice of the dependency tree. The lesson is not about Click: a
+statement enumerating the cases where a hazard applies decays, while a statement
+of the hazard does not. Prefer the rule to the list when the underlying set can
+grow.
+**Who found it:** pass 4 checkpoint 2, from a `.venv` audit against
+`pyproject.toml`'s declared extras that the companion session asked for on
+unrelated grounds. Recorded in `notes/verified.md`. `CLAUDE.md` was left
+untouched by the agent and flagged here for the human, which is the correct
+handling — an agent editing its own standing instructions is not a change it
+should make unattended.
