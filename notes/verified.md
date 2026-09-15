@@ -1422,6 +1422,15 @@ Windows / CUDA 13.0 — including the six distributions only scikit-learn brings
 and real Click arriving with timm. The `except click.*` hazard `CLAUDE.md`
 describes is live on every machine that can train, not only web installs.
 
+**The shape of the problem, not just this instance:** `CLAUDE.md` names
+`optica[web]` as *the* exception that lets real Click in. There are now at least
+two routes — `[web]` (uvicorn) and the torch stack or `[clip]` (huggingface_hub)
+— and a third could arrive with any dependency bump. A rule enumerating the
+exceptions will go stale the same way; the durable statement is general: *real
+Click may be importable in any environment beyond Core; never write `click.*`*.
+The human replaces the `CLAUDE.md` wording at the pass boundary; it is not edited
+by a pass.
+
 ### timm 1.0.29: the head, the top-level modules, and mobilenet's post-pool layers
 **Date:** 2026-09-15
 **How:** `.venv` (torch 2.14.0+cu130, timm 1.0.29), `scratchpad/timm_probe.py`:

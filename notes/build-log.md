@@ -3255,3 +3255,47 @@ trainer on `torch.device("cpu")` with `pretrained=False` — the CLI's CPU path 
 tested with a fake trainer); `train --manifest` against the real trainer; a real
 Ctrl+C at a terminal (interruption is raised from the reporter in tests).
 **Next:** checkpoint 3, `export/`.
+
+### Incident — `export` and `run` were deleted from `cli/classify.py` mid-checkpoint 2
+**Pass:** 4, checkpoint 2   **Date:** 2026-09-15   **Where:** `src/optica/cli/classify.py`   **Recorded:** at the start of checkpoint 3, at the human's request — it should have been logged when it happened.
+**What happened:** to remove two helpers I had just written (`_log_interrupted_epoch`,
+`_patience_of`), a scratch script sliced the file with
+`t[: t.index("def _patience_of(")]` — *to end of file*. `_patience_of` was the
+last function of the new `train` block, but the pre-existing `export` and `run`
+commands followed that block, so they went too. The same session then ran
+`ruff check --fix`, which removed the now-unused `MODES` import — the auto-fix
+erased evidence of the deletion.
+**What caught it: the test suite, before any commit.** The next fast run failed
+`tests/unit/cli/test_classify.py::TestCommandSurface::test_the_flat_alias_exists[run]`
+and `[export]` (pass 1's command-surface test: `assert name in _commands()`).
+After restoring the two commands from `git show HEAD`, `ruff check` reported
+`F821 Undefined name MODES` in `run`, which is how the `--fix` removal surfaced.
+Scope was then confirmed by hand — an AST comparison of top-level definitions
+against HEAD (none missing) and `git diff HEAD` showing only the three stub lines
+deleted. **That last step was attention, not a control.**
+**What would not have been caught:** the command-surface test covers the
+registered commands only. A private helper deleted the same way would fail only
+if a test imports or calls it, or ruff F821 sees a reference to it. Deleted code
+that is neither referenced nor tested — a docstring, a comment carrying a
+decision, a branch inside a surviving function — passes the suite, ruff and mypy.
+**What controls it now:**
+1. **The command-surface test** (pass 1) — unchanged, and it did its job.
+2. **No more unbounded slices in edit scripts.** Every scripted edit from here
+   uses exact-match replacement with a count assertion (`s.count(old) == 1`) —
+   the form every other edit in this pass already used. A removal is bounded by
+   both ends of the text removed.
+3. **`ruff check --fix` is not run on a dirty tree.** Plain `ruff check` reports;
+   fixes are applied by hand, so a fix cannot remove the trace of a mistake.
+4. **Before every commit, `git diff --cached --numstat` is read against intent**
+   — a file whose deletions exceed what the change should delete is stopped.
+   This is a procedure, not an automated check; recorded as exactly that.
+**Not added:** a test asserting every top-level definition in `classify.py`
+survives. It would freeze the module's shape and fail on every legitimate
+removal, which is noise the next pass learns to ignore.
+
+### Handoff — `CLAUDE.md`'s Click note enumerates exceptions, and there are now two
+**Pass:** 4   **Date:** 2026-09-15   **For:** the human, at the pass boundary
+`CLAUDE.md` calls `optica[web]` *the* exception that makes `import click`
+succeed. The torch stack and `[clip]` are a second route (huggingface_hub 1.31.0,
+`notes/verified.md` § "What `.venv` holds…"). The human will replace the
+enumeration with a general rule; this pass does not edit `CLAUDE.md`.
