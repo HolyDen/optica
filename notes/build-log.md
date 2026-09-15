@@ -3230,8 +3230,9 @@ from `input/clip.py` to `utils/mlstack.py`; the MPS entry above now points there
 scratch venv, `-m "not slow"`: 1983 passed, 26 skipped, 73 deselected (2082
 collected — module-level skips of the web-extra modules count once there). Ruff
 clean; mypy clean in both venvs.
-**Mutation checks — 28 run, 28 bite** (`scratchpad/mutate_train.py`, each run
-against the named test files, source restored after each):
+**Mutation checks — 27 mutations; 26 bit on the first run, 27 after one test was
+rewritten** (`scratchpad/mutate_train.py`, each run against the named test files,
+source restored after each):
 
 | Area | Mutations | Bite |
 |---|---|---|
@@ -3242,13 +3243,12 @@ against the named test files, source restored after each):
 | trainer | top-N never evicts; class-weight formula; interrupt unmarked; resume without weights | 4 / 4 |
 | transforms, data | round vs floor; decode error unwrapped | 2 / 2 |
 | CLI | housekeeping acts at the prompt; CPU prompt not SAFETY; duplicates kept; torch before dataset checks; changed dataset resumes; **K/A/D/S not skipped on resume** | 6 / 6 |
-| QuickGELU (checkpoint 1, re-run) | — | — |
 
-**The K/A/D/S-on-resume mutation survived the first run** (27 of 28 at first):
-the test asserted the menu's absence under `--yes`, where `choose()` answers
-without printing it. Rewritten to run interactively and record every question;
-the mutation now fails it. Totals: 3 + 5 + 3 + 4 + 4 + 2 + 6 = 27 source
-mutations plus the rewritten test's re-check = 28 runs.
+**The K/A/D/S-on-resume mutation survived the first run:** the test asserted
+the menu's absence under `--yes`, where `choose()` answers without printing it.
+Rewritten to run interactively and record every question; re-running that
+mutation alone now fails it (1 failed, 47 passed; restored, 48 passed). Totals:
+3 + 5 + 3 + 4 + 4 + 2 + 6 = 27.
 **Live:** one smoke run (`notes/verified.md`), not the milestone.
 **Not exercised:** MPS; CPU training end to end on this machine (tests run the
 trainer on `torch.device("cpu")` with `pretrained=False` — the CLI's CPU path is
