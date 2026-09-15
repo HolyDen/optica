@@ -3543,3 +3543,80 @@ unrelated grounds. Recorded in `notes/verified.md`. `CLAUDE.md` was left
 untouched by the agent and flagged here for the human, which is the correct
 handling — an agent editing its own standing instructions is not a change it
 should make unattended.
+
+### Plan amendment session 3 — items 17, 17b and 18 decided
+**Pass:** between 4 and 5   **Date:** 2026-09-15   **Where:** `spec/optica-plan-v1-core.md`
+**What this is:** the outcome of the third out-of-repo plan-amendment session.
+It is recorded here so pass 5, reading pass 4's three proposals above, can tell
+which landed and in what wording. The `spec/` edits were applied by the user,
+not by an agent.
+
+| # | Item | Disposition | Sites |
+|---|---|---|---|
+| 17 | The CLIP load call builds GELU under QuickGELU-trained weights | **Ratified** — kwarg added inside the call | l.848 |
+| 17b | `clip_threshold = 0.25` sits inside the true-positive score range | **Deferred** — fast-follow; no edit | — |
+| 18 | mobilenet's `conv_head` frozen in both phases | **Ratified** — cell amended | l.1063 |
+
+**For pass 5 — the `clip_threshold` bands did not change.** l.859–865 and the
+`--yes` rows at l.205–206 stand as written. So does the default `0.25` (l.336,
+l.851, l.1746). Transcribe them as the plan states them.
+
+**Item 17 — what landed differs from the proposal.** l.848 now reads, on one
+line:
+`model, _, preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='openai', force_quick_gelu=True)`.
+The proposal's two-line layout was not used, because it would move every later
+line number. Its explanatory sentence was not added either. The kwarg is correct
+whether or not a later open-clip applies the tag's activation itself, while the
+sentence describes open-clip 3.3.0's behaviour, which is exactly what
+`input/clip.py`'s slow test watches for a change. `MODEL_KWARGS` already
+matches, so no code changes.
+
+**Item 17b — why the number stands.** Under the activation change, the mean
+own-class score moves +0.003 (dog) and +0.006 (cat), and at most 0.022 on any
+one image. That is about the size of the value's own last-digit rounding. The 22
+crossings are large because 0.25 sits where true-positive scores are densest,
+not because the scale moved.
+
+What was measured does not support a lower default either. Against the *other*
+class's prompt, cats average 0.2206 and dogs 0.2030. At 0.25, clip mode keeps 76
+of 120 genuine images and admits 4 of 120 as the wrong class; a value near 0.20
+sits inside that near-negative distribution. Real negatives from a text search
+were never measured, and `notes/verified.md` holds no per-image scores.
+
+The plan is not edited. l.853 already reports a shortfall per class and says it
+is not an error, and l.1723 already accepts that one threshold may over-filter
+a class, so the user-visible consequence is covered.
+
+**Item 17b — what the fast-follow starts from.**
+- **Study the threshold and l.853's hardcoded 2× over-fetch together.** Dog
+  survival at 0.25 was 52–54%, against the factor's 50% break-even; live run 3
+  kept 25 dogs from 27 that passed.
+- **Revisit the band edges too.** The Normal band runs to <0.5, and no measured
+  score exceeded 0.3059.
+- **Keep the per-image scores.** If `scratchpad/gelu_compare.py`'s per-image
+  scores still exist, keep them; they are the only per-image data.
+
+Two verified classes from one source are the whole evidence base so far.
+
+**Item 18 — what landed differs from the proposal.** l.1063's cell now reads
+*Last 3 blocks + `conv_head`*. The proposed `(blocks[4]`–`blocks[6])` span was
+not added: on 13 September, item 10 deleted this row's type word and declined
+adding indices, because indices are the part that decays.
+
+The derived rule is *the named blocks plus every parameterised module after
+them, up to the classifier*. It was checked against § task 4's module order and
+restates l.1060–1062 exactly. It is not written into the plan, since in V1 four
+rows that agree with it are a closed list. `training/models.py` already
+matches, so no code changes.
+
+**Item 18 — a number worth keeping.** mobilenet's Phase 2 trainable share,
+classifier included, is now 95.4% of parameters, up from 66.2% under the
+literal reading. For comparison, the efficientnets sit at 78.8% and 79.3%, and
+resnet50 at 63.7%. Still frozen in Phase 2: `conv_stem`, `bn1` and
+`blocks[0]`–`[3]`. Nothing measured accuracy under either reading.
+
+**Correction to the agenda's framing.** The pass 4 close and the run record
+describe 17 and 17b as one decision because *the call and the number are
+calibrated together*. That holds in principle and not at the measured scale.
+Changing the call does not move the number, and 17b stands or falls on its own
+evidence.
