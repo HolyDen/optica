@@ -30,6 +30,10 @@ _NO_LOGIC: frozenset[str] = frozenset(
         # Pass 3: the package docstring and nothing else. FastAPI must never be
         # imported here — `optica.server.app` has to stay importable without it.
         "server/__init__.py",
+        # Pass 4: the package docstring and nothing else. torch must never be
+        # imported here — `optica --version` imports `cli/classify.py`, which
+        # imports `training/`.
+        "training/__init__.py",
     }
 )
 
