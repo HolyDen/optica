@@ -1412,8 +1412,9 @@ both `timm` and `open-clip-torch` require `huggingface_hub`. Installed: click
 8.5.0, reached by `[web]` (uvicorn `click>=7.0`), `[clip]`, `[all]` and the torch
 stack. So `import click` succeeds in any environment with `optica[clip]` or
 with what `optica setup` installs for training — not only under `optica[web]`, as
-`CLAUDE.md`'s Click note currently says. Core alone still has no Click (typer
-0.27.2 requires only `shellingham` beyond its vendored copy).
+`CLAUDE.md`'s Click note currently says. Core alone still has no Click: typer
+0.27.2 declares `shellingham>=1.3.0`, `rich>=13.8.0`, `annotated-doc>=0.0.2`,
+`colorama; platform_system == "Windows"` — no `click` (`importlib.metadata.requires('typer')`).
 
 **Consequence:** pass 5's `optica setup` installs torch, torchvision, timm and
 scikit-learn; this entry is what a correct result looks like on CPython 3.11 /
