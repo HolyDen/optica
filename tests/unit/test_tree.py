@@ -34,6 +34,8 @@ _NO_LOGIC: frozenset[str] = frozenset(
         # imported here — `optica --version` imports `cli/classify.py`, which
         # imports `training/`.
         "training/__init__.py",
+        # Pass 4, likewise: `export/` is imported by `cli/classify.py`.
+        "export/__init__.py",
     }
 )
 
