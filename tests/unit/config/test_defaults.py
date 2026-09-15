@@ -198,9 +198,15 @@ class TestPlanValuesStillToImplement:
         assert (check.warning is not None) is warns
         assert check.prompt is None
 
-    @pytest.mark.skip(reason="stub - pass 4")
-    def test_finetune_ratio_extremes_warn(self):
+    @pytest.mark.parametrize("ratio", [0.0, 1.0])
+    def test_finetune_ratio_extremes_warn(self, ratio):
         """Both extremes are permitted, and both warn.
 
         0.0 skips fine-tuning; 1.0 skips head warmup.
         """
+        from optica.config.schema import OpticaConfig
+        from optica.training.engine import finetune_ratio_warning
+
+        assert OpticaConfig(finetune_ratio=ratio).finetune_ratio == ratio  # permitted
+        text = finetune_ratio_warning(ratio) or ""
+        assert ("skips fine-tuning" if ratio == 0.0 else "skips head warmup") in text
