@@ -3620,3 +3620,49 @@ describe 17 and 17b as one decision because *the call and the number are
 calibrated together*. That holds in principle and not at the measured scale.
 Changing the call does not move the number, and 17b stands or falls on its own
 evidence.
+
+### Fast-follow reconciliation — fourteen pre-implementation findings read against passes 0–4
+**Pass:** between 4 and 5   **Date:** 2026-09-16 to 2026-09-18   **Where:** `spec/optica-plan-v1-core.md`; `optica-fast-follow-findings.md`
+**What this is:** the outcome of an out-of-repo session. It read the fourteen needs-decision findings in `optica-fast-follow-findings.md` — sorted before implementation began and not consulted in four passes — against the code those passes shipped, and recorded three items the run itself raised. The `spec/` edits are applied by the user, not by an agent. It is recorded here so that pass 5 can tell which decisions landed and in what wording.
+
+| Item | Disposition | Plan sites |
+|---|---|---|
+| F21 — declined prompt `3` vs `click.Abort` `130` | **Resolved** † | l.220, l.1570 |
+| F14 + O8 — `optimizer` in the artifact `config` blocks; `finetune_ratio` in `TrainConfig` | **Resolved** † (O8 → pass 5) | l.1155, l.1284, l.1394 |
+| F18 — `TrainResult` lacks `early_stopped` | **Pass-5** | l.1374, l.1378 |
+| F23 — `--only` undefined | **Post-V1** † | l.1649 |
+| F15 — exporting an interrupted checkpoint | **Resolved** † | l.1165 |
+| F16 — "permanent" log vs "regenerable" folder | **Plan-open**, decided | l.289 |
+| F5 — `--yes` at the blocklist definition prompt | **Resolved** † — already in the plan | — |
+| F1 + O3 — version table; uvicorn declaration | **Resolved** | l.104, l.112 |
+| F2 — "`.env` is gitignored" | **Plan-open**, decided | l.261 |
+| F8 — soft cap vs clip's 2× draw | **Post-V1**, with 17b | l.853 |
+| F11 — "Optica doesn't touch" | **Plan-open**, decided | l.799 |
+| F13 — zero-readable abort and ownership | **Plan-open**, decided | l.949 |
+| F22 — exception class for a nonexistent checkpoint path | **Pass-5** | l.1419 |
+| F24 — Note 19 and verbosity | **Plan-open**, decided | l.1642 |
+| 15b, 17b, mobilenet Phase 2 share | **Post-V1** — new section of the fast-follow file | — |
+
+18 edits on 18 lines, applied to a scratch copy and invariant-checked. The file stays at 1781 lines, CRLF throughout, and no line number moves. l.1570 is the first change to the exit-code table in this run, and it was made deliberately.
+
+**† = unverified.** The session asked for one batch of repository observations, and the batch was not run. The dispositions rest on what the plan says; where they also depend on shipped code, the settling command is in `optica-fastfollow-reconciliation-dispositions-2026-09-16.md`. Pass 5 is told to check each one.
+
+**For pass 5 — what changed and what to do.** Read the 18 lines as they stand in `spec/`, not the proposals in the dispositions file. `notes/passes/pass-5.md` carries the full block. In short:
+- **`TrainConfig`** has exactly eleven fields, and they are the same eleven the artifact `config` block carries. Confirm the shipped blocks hold all eleven.
+- **`TrainResult.early_stopped`** is copied from the loop's own flag, never derived from `epochs_run`, and is `None` under `dry_run`.
+- **`Classifier(checkpoint_path=…)`** raises `OpticaValidationError` whether the path is missing or is not a checkpoint.
+- **The interrupted-export warning** gets a stable `WarningEntry` code.
+- **Every new prompt** answers N itself and exits `3`. `confirm(..., abort=True)` has no call site in `src/`.
+- **The API** raises `OpticaValidationError` at the blocklist definition step.
+- **The zero-readable abort** on `curate` and `clip` reports a count only.
+- **`--only`** is not built.
+
+**For pass 6 — the README.**
+- Advise users to add `.env` to their own `.gitignore`. Optica never touches it (l.261, l.289).
+- Name `~/.optica/logs/` as the durable run history. The copy under `--output` duplicates it (l.289, l.1175).
+
+**Correction to the fast-follow file's record.** F5 quotes l.183 as saying `--yes` "resumes automatically". That sentence was rewritten by the Findings Resolution session's own F7/F9 edits before implementation, and l.183 now states F5's resolution (c). The fast-follow file carries a note to this effect; its line citations all still resolve.
+
+**For the human.**
+- **`CLAUDE.md`.** § "Settled points that the plan leaves implicit" opened with the declined-prompt rule, which the plan now states at § "Error handling and prompt conventions (standing rules)" and § "Exceptions". The paragraph now cites both. The heading is unchanged, and the `confirm(..., abort=True)` ban remains the genuinely implicit part.
+- **Run the observation batch before pass 5 opens.** It is in the session transcript and in the dispositions file.
