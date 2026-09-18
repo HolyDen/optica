@@ -138,11 +138,13 @@ write code that depends on any of them before they are answered.
 
 ## Settled points that the plan leaves implicit
 
-**Declined prompts exit `3`; `click.Abort` exits `130`.** Optica handles an `N`
-answer itself and returns `3`. `click.Abort` is reserved for an interrupt at a
-prompt and joins SIGINT at `130`. **Do not use `confirm(..., abort=True)`** — it
-raises `Abort` for both cases and would return `130` where the exit-code table
-requires `3`. This lands in pass 1 and every later command inherits it.
+**Declined prompts exit `3`; `click.Abort` exits `130`** — the plan states this
+at § "Error handling and prompt conventions (standing rules)" and §
+"Exceptions"; the idiom below is the part that stays implicit. Optica handles an
+`N` answer itself and returns `3`. `click.Abort` is reserved for an interrupt at
+a prompt and joins SIGINT at `130`. **Do not use `confirm(..., abort=True)`** —
+it raises `Abort` for both cases and would return `130` where the exit-code
+table requires `3`. This lands in pass 1 and every later command inherits it.
 
 **Core is exactly six packages.** Do not add `click` or `pydantic` to the
 dependency list. `pydantic` arrives transitively through `pydantic-settings` — confirmed
