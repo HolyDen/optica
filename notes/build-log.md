@@ -3666,3 +3666,25 @@ evidence.
 **For the human.**
 - **`CLAUDE.md`.** § "Settled points that the plan leaves implicit" opened with the declined-prompt rule, which the plan now states at § "Error handling and prompt conventions (standing rules)" and § "Exceptions". The paragraph now cites both. The heading is unchanged, and the `confirm(..., abort=True)` ban remains the genuinely implicit part.
 - **Run the observation batch before pass 5 opens.** It is in the session transcript and in the dispositions file.
+
+### Fast-follow reconciliation — the seven unverified dispositions, observed
+**Pass:** between 4 and 5   **Date:** 2026-09-18   **Where:** observation only; no file in `src/` or `tests/` was touched
+**What this is:** the entry above recorded seven dispositions as unverified, because the session's repository observations had not been run. They were run on 18 September, before pass 5 opened. **Nothing is contradicted and no disposition changed.**
+
+| Row | What was observed |
+|---|---|
+| F21 | `findstr /s /n /c:"abort=True" src\*.py` returns one line: `utils/prompts.py`'s module docstring, stating that `typer.confirm(..., abort=True)` is never used and that `confirm_or_abort` is the only place the decline-to-exit mapping is written. No call site. |
+| F23 | `--only` appears nowhere in `src/` or `tests/`. |
+| F14 | Three `checkpoint_info.json` files and the exported `model_info.json` from the pass 4 milestone each carry exactly eleven `config` keys — the plan's six plus `optimizer`, `max_checkpoints`, `train_split`, `val_split`, `test_split`. The amended examples at l.1155 and l.1284 describe shipped behaviour. |
+| F15 | `export_manager.missing_run_end()` detects a checkpoint whose run never finished; `info.get(...)` writes `epochs_trained` and `early_stopped` as `null`; `cli/classify.py` warns through `olog.warn` with a `why=` naming both fields. l.1165's "with a warning" describes shipped behaviour. The API's `WarningEntry` remains pass 5's. |
+| F18, F22 | `TrainConfig`, `TrainResult` and `Classifier` do not exist in `src/`, as expected — both items are pass 5's to write. `training/trainer.py` already carries `early_stopped` on the loop's outcome object, which the CLI's completion block reads, so pass 5 copies a value rather than computing one. |
+| F5 | Two live tests on `TerminalClassPrompter.define` pin both branches of l.183: `OpticaValidationError` in a non-prompting context, and the prompt firing in a terminal under `--yes`. |
+| CRLF | `git ls-files --eol spec/optica-plan-v1-core.md` reports `i/crlf w/crlf attr/-text` after the amendment commit. |
+
+**Two corrections to `notes/passes/pass-5.md`**, made in the same commit as this entry:
+- **Item 5 was wrong as committed.** It said the `abort=True` grep must return nothing; it always returns the docstring line. It now says exactly one line, that line, and that any call site is a defect.
+- **Items 1, 2, 4 and 6 now record what was observed**, so pass 5 does not re-run checks that are already answered: the eleven `config` keys, `outcome.early_stopped`, the CLI's existing warning, and `TerminalClassPrompter.define` as the shipped example. Item 7, the zero-readable abort on `curate` and `clip`, is still a check pass 5 must make.
+
+**One observation with no owner.** `tests/unit/utils/test_prompts.py`'s `TestPlanValuesStillToImplement` holds live tests for behaviour pass 2 shipped, including both F5 branches; its own comment says so. The class name is stale for its contents. Not fixed here — it is test organisation, not scope.
+
+**Record correction.** The entry above, and the two commits before it, were rebuilt locally on 19 September: they carried 16 September where the work ran from the 16th to the 18th, and the `spec/` commit message carried the same date. Nothing had been pushed. The rebuilt commits carry author date 2026-09-18 and committer date 2026-09-19; `backup/pre-date-fix` holds the originals until this is settled.

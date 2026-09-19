@@ -37,17 +37,18 @@ Pass 5 is the last pass that writes `src/`.
    `learning_rate`, `augmentation`, `early_stopping`, `finetune_ratio`,
    `optimizer`, `max_checkpoints`, `train_split`, `val_split`, `test_split` —
    and the artifact `config` block carries the same eleven (§ "Training",
-   § "Python API"). Before building `TrainConfig`, read one shipped
-   `checkpoint_info.json` and its exported `model_info.json` and confirm both
-   `config` blocks hold these eleven keys. If one is missing, add it in the
-   training or export code, with a test, and log it.
+   § "Python API"). Verified: every shipped `checkpoint_info.json` and the
+   exported `model_info.json` already carry exactly these eleven keys, so
+   `TrainConfig` matches what ships.
 
 2. **`TrainResult` carries `early_stopped: bool`**, copied from the training
-   loop's own flag. **Never derive it from `epochs_run < epochs_requested`**:
-   each phase has its own early-stopping window, so a completed run whose
-   Phase 1 stopped early ends short of `--epochs` with `early_stopped` false.
-   Under `dry_run=True` it is `None`, like every other outcome field. Do not
-   add a field for the "(N classes absent from test set)" count — fast-follow.
+   loop's own flag — the loop's outcome object already exposes
+   `outcome.early_stopped`, which the CLI's completion block reads. **Never
+   derive it from `epochs_run < epochs_requested`**: each phase has its own
+   early-stopping window, so a completed run whose Phase 1 stopped early ends
+   short of `--epochs` with `early_stopped` false. Under `dry_run=True` it is
+   `None`, like every other outcome field. Do not add a field for the
+   "(N classes absent from test set)" count — fast-follow.
 
 3. **`Classifier(checkpoint_path=…)` raises `OpticaValidationError`** both when
    the path does not exist and when it exists but is not a checkpoint folder
@@ -55,21 +56,26 @@ Pass 5 is the last pass that writes `src/`.
    checks existence only and never imports torch.
 
 4. **Exporting an interrupted checkpoint** writes `epochs_trained` and
-   `early_stopped` as `null` and warns. In the API that warning is a
-   `WarningEntry` with its own `code`. Codes are stable API surface, so choose
-   the name deliberately and log it.
+   `early_stopped` as `null` and warns. The CLI already does both, through
+   `export_manager.missing_run_end()` and `olog.warn`. **In the API that
+   warning must be a `WarningEntry` with its own `code`.** Codes are stable API
+   surface, so choose the name deliberately and log it.
 
 5. **Declined prompts exit `3`; `click.Abort` means interrupted and exits
    `130`.** Every prompt this pass adds — `optica setup`, `optica run`'s R/C/S,
-   any other — handles an `N` answer itself. Never `confirm(..., abort=True)`.
-   At pass close, `findstr /s /n /c:"abort=True" src\*.py` must return nothing;
-   record that in `notes/build-log.md`.
+   any other — handles an `N` answer itself. Never `confirm(..., abort=True)`;
+   `utils.prompts.confirm_or_abort` is the only place the decline-to-exit
+   mapping is written. At pass close, `findstr /s /n /c:"abort=True" src\*.py`
+   must return exactly one line, the explanatory sentence in
+   `utils/prompts.py`'s module docstring. **Any call site is a defect.** Record
+   the check in `notes/build-log.md`.
 
 6. **The blocklist definition prompt.** `optica.run()` and `optica.fetch()`
    raise `OpticaValidationError` at the definition step, naming the blocklisted
    class and saying a concrete definition is required — never prompting. The
    CLI pauses where a prompt can fire, even under `--yes`, and raises where
-   none can.
+   none can — `TerminalClassPrompter.define` is the shipped example, and its
+   tests pin both branches.
 
 7. **Check, and fix if needed:** when `curate` or `clip` aborts on zero
    readable images it reports a **count only**. Reasons are listed only for
