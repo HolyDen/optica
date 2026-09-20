@@ -27,6 +27,8 @@ from tests.unit.export.test_manager import _info
 
 @pytest.fixture
 def writer(monkeypatch, fake_home, project_dir):
+    from optica.export import pytorch as writer
+
     calls: dict[str, Any] = {"exports": [], "torch_imports": 0}
 
     def import_stack():
@@ -39,7 +41,10 @@ def writer(monkeypatch, fake_home, project_dir):
         return ["model.pt", "usage_examples.md"]
 
     monkeypatch.setattr("optica.cli.classify.import_torch_stack", import_stack)
-    monkeypatch.setattr("optica.export.pytorch.export", fake_export)
+    # Patched through the module object: since pass 5, `optica.export` on the
+    # package is the Tier 3 function, so a dotted string cannot walk to the
+    # module (notes/build-log.md).
+    monkeypatch.setattr(writer, "export", fake_export)
     return calls
 
 

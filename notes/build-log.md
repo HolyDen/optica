@@ -3824,3 +3824,101 @@ selection as injected callables), the pip commands, and the Review's rendering.
 `timm` and `scikit-learn` are absent from the torch index and `--index-url`
 replaces PyPI rather than adding to it — but building the command is
 `cli/setup.py`'s, at checkpoint 3.
+
+### The interrupted-export warning code — `checkpoint_run_incomplete`
+**Pass:** 5   **Date:** 2026-09-20   **Where:** `api/simple.py::WarningCode`
+**Missing:** pass-5.md item 4 and plan l.1165 require the interrupted-checkpoint
+export warning to be a `WarningEntry` with **its own `code`**, and say codes are
+stable API surface — but name no code. Choosing one is permanent: renaming it
+after V1 breaks every caller branching on it.
+
+**Chosen:** `checkpoint_run_incomplete`.
+**Why:** the plan's own two example codes — `class_imbalance`, `low_resolution` —
+name *what is true*, as subject plus condition, and carry no command prefix.
+This one's subject is the checkpoint and its condition is that the run which
+produced it never finished, which is exactly what `export_manager.missing_run_end()`
+establishes: `epochs_trained` and `early_stopped` are absent, so
+`model_info.json` records them as `null`.
+
+**Rejected, and why each was rejected:**
+- **`interrupted_checkpoint`** — the plan's *heading* word, and the checkpoint
+  may carry `"interrupted": true`. Rejected because it asserts a **cause the
+  check does not establish**: `missing_run_end()` tests for two absent keys, and
+  a crash, a kill, or a machine losing power leaves the same state without any
+  interrupt handler running. A code that names a cause a caller cannot rely on
+  is worse than one that names the state.
+- **`incomplete_run`** — the closest to the CLI's own sentence ("from a run that
+  did not finish") and the shape of `low_resolution`. Rejected for **collision
+  inside its own namespace**: `optica.run()` and `RunResult` are in the same
+  API, so a caller reading `code == "incomplete_run"` would reasonably take it
+  for the pipeline call rather than the training run behind a checkpoint.
+- **`missing_run_end`** — exactly what the detector checks. Rejected because it
+  is the **detector's own function name**: it names the mechanism (two absent
+  JSON keys) rather than the condition, and promoting an implementation detail
+  to permanent public surface is what makes later refactoring breaking.
+- **`export_interrupted_checkpoint`, or any `export_` prefix** — rejected
+  because the plan's example codes carry no command prefix, and the same
+  checkpoint state is readable outside export: `Classifier(checkpoint_path=…)`
+  meets it, and post-V1 incremental learning reads the same two fields. A prefix
+  would date the code to the first command that happened to surface it.
+
+**Reversible?** Until V1 ships, yes — one constant and its tests. After, no.
+The full code set lives in one class, `WarningCode`, so the whole stable surface
+is visible in one place rather than as literals at each raise site.
+
+### `optica.export` — the flat alias collides with the `export/` subpackage
+**Pass:** 5   **Date:** 2026-09-20   **Where:** `src/optica/__init__.py`
+**Missing:** the plan fixes **both** names and does not notice they collide.
+§ "Python API" gives `optica.export()` as a Tier 3/4 flat alias (its own example
+calls it), and § "Code Structure" gives `src/optica/export/` to the Export
+Manager. On the `optica` package object only one `export` attribute can exist.
+
+**Assumed:** the **function wins**. `optica/__init__.py` binds the alias after
+the subpackage has been imported, so `optica.export(...)` is the Tier 3 call and
+`sys.modules["optica.export"]` is still the module.
+**Why:** the alias is the surface users are told to call; the package is
+internal. Everything inside Optica already reaches it as
+`from optica.export import manager` / `import pytorch`, which is unaffected.
+Renaming the package would contradict § "Code Structure", and a plan
+contradiction is a stop-and-report, not a silent edit.
+
+**What it costs, stated rather than hidden:** any attribute walk from the
+package object — `import optica.export.pytorch` then `optica.export.pytorch.x`,
+and `monkeypatch.setattr("optica.export.pytorch.export", …)` — now resolves
+`optica.export` to the function and fails. That broke **25 existing tests** in
+`tests/unit/cli/test_export_command.py` and `tests/unit/export/test_manager.py`,
+all of them patching the writer by dotted string; both now patch through the
+module object instead, with a comment saying why. No product code was affected.
+A test pins the resolution both ways, so a silent flip fails loudly.
+**Reversible?** Yes, by dropping the flat `export` alias — which the plan's own
+example forbids.
+
+### The Python API — six smaller decisions
+**Pass:** 5   **Date:** 2026-09-20   **Where:** `api/simple.py`, `api/classifier.py`
+1. **The blocklist raise moves to entry.** The CLI reaches the definition prompt
+   inside the class sequence, after `source.prepare()`. The API raises before
+   the lock is taken, because `define` has no safe answer here so the outcome is
+   already determined — and l.769 says an unattended run "refuses **before any
+   fetch begins**". `dry_run=True` still reports `needs_definition` rather than
+   raising, matching the CLI's dry run.
+2. **The overwrite refusal is API-shaped.** `input_manager.overwrite_refused()`
+   names `--overwrite`; the API raises its own `OpticaValidationError` naming
+   `overwrite=True`, per the mapping rule that sends `--overwrite` to a
+   per-operation `overwrite=True`. Tested for both the presence of the one and
+   the absence of the other.
+3. **`verbose=` is restored after each call.** The CLI sets verbosity globally
+   and keeps it; a library call that left the process quieter than it found it
+   would be a side effect nobody asked for, so the level is set for the call and
+   put back. The plan's stated loss stands: `--verbose`'s extra detail has no
+   API spelling.
+4. **`run(dataset=…)` takes `None` as its default**, not `"dataset"`. The
+   short-circuit resolution needs to know whether the caller named the dataset —
+   `dataset_explicit` in `short_circuits_acquisition` — and only a sentinel can
+   carry that. Every other function keeps the plain default.
+5. **`checkpoints.read(folder)` was added** — the single-folder counterpart of
+   `list_active`, which had no public way to read one checkpoint by path.
+   `Classifier(checkpoint_path=…)` validates through it and `list_active` now
+   uses it, so there is one parse rather than two. JSON only; never torch.
+6. **Browser steps that do not finish raise.** `label()` and `curate()` have no
+   exit code to return, so a timeout raises `OpticaError` and an interrupt
+   re-raises `KeyboardInterrupt` — the API counterparts of exit 3 and 130.

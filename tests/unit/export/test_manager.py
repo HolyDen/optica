@@ -21,6 +21,7 @@ import pytest
 
 from optica.exceptions import OpticaExportError, OpticaValidationError
 from optica.export import manager
+from optica.export import pytorch as writer
 from optica.training import checkpoints as ckpt
 
 MOMENT = datetime(2026, 3, 12, 16, 45, 10)
@@ -279,7 +280,10 @@ class TestAtomicWrite:
             (folder / "usage_examples.md").write_text("x", encoding="utf-8")
             return ["model.pt", "usage_examples.md"]
 
-        monkeypatch.setattr("optica.export.pytorch.export", fake_export)
+        # Patched through the module object: since pass 5, `optica.export` on
+        # the package is the Tier 3 function, so a dotted string cannot
+        # walk to the module (notes/build-log.md).
+        monkeypatch.setattr(writer, "export", fake_export)
         out = tmp_path / "out"
         out.mkdir()
         record = manager.export_checkpoint(
@@ -301,7 +305,7 @@ class TestAtomicWrite:
             (folder / "model.pt").write_bytes(b"half")
             raise OpticaExportError("boom")
 
-        monkeypatch.setattr("optica.export.pytorch.export", failing)
+        monkeypatch.setattr(writer, "export", failing)
         out = tmp_path / "out"
         out.mkdir()
         with pytest.raises(OpticaExportError):

@@ -51,6 +51,7 @@ __all__ = [
     "mark_interrupted",
     "mark_run_end",
     "rank",
+    "read",
     "resumable",
     "save_weights",
     "soft_limit",
@@ -135,6 +136,18 @@ def _read_info(folder: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def read(folder: Path) -> Checkpoint | None:
+    """One checkpoint by folder, or None when it is not one.
+
+    The single-folder counterpart of :func:`list_active`, which is what
+    ``Classifier(checkpoint_path=…)`` validates against: a folder without a
+    readable ``checkpoint_info.json`` is not a checkpoint. Reads JSON only —
+    **never torch**, so constructing a ``Classifier`` needs no ML stack.
+    """
+    info = _read_info(folder) if folder.is_dir() else None
+    return None if info is None else Checkpoint(folder, info)
+
+
 def list_active(root: Path) -> list[Checkpoint]:
     """Every checkpoint folder directly in ``root``, ``archive/`` excluded.
 
@@ -147,9 +160,9 @@ def list_active(root: Path) -> list[Checkpoint]:
     for entry in sorted(root.iterdir()):
         if not entry.is_dir() or entry.name == ARCHIVE_DIR:
             continue
-        info = _read_info(entry)
-        if info is not None:
-            found.append(Checkpoint(entry, info))
+        checkpoint = read(entry)
+        if checkpoint is not None:
+            found.append(checkpoint)
     return found
 
 
