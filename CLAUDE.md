@@ -91,7 +91,7 @@ that looks urgent in `notes/build-log.md` and leave it for its own pass.
 | 2 | `input/` except `clip.py` — class-name rules, blocklist, manifest, validation, sessions | `optica fetch` runs end to end |
 | 3 | `server/` — FastAPI app, routes, both pages, shared JS/CSS | `optica label` and `optica curate` run |
 | 4 | `training/`, `export/`, `input/clip.py` | `optica train` and `optica export` run |
-| 5 | `api/simple.py`, `api/classifier.py`, `cli/setup.py`, the registries | `optica.run()` and `optica setup` work |
+| 5 | `api/simple.py`, `api/classifier.py`, `cli/setup.py`, `registries.py`, `pipeline.py`, `optica run`'s CLI body | `optica.run()` and `optica setup` work |
 | 6 | Full CI matrix, `README.md`, `CHANGELOG.md`, version classifiers | Matrix is valid YAML; README and CHANGELOG complete |
 
 ## How each pass works
