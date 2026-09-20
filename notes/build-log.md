@@ -4578,3 +4578,31 @@ the fix, it reproduced CI exactly: `1 failed, 2324 passed`. After: `2326 passed,
 26 skipped, 76 deselected`, with `ruff` and `mypy` clean under that interpreter
 too. Running the suite CI-style at each checkpoint is what caught this in passes
 2, 3 and 4; skipping it is what let a green checkpoint 5 hide a red CI.
+
+### `CLAUDE.md`'s pass 5 row omitted three modules
+**Pass:** between 5 and 6   **Date:** 2026-09-20   **Where:** `CLAUDE.md` § "Build order", pass 5 row
+**Found:** the row read *"`api/simple.py`, `api/classifier.py`, `cli/setup.py`,
+the registries"*. Three modules pass 5 built are absent from it:
+- `src/optica/registries.py` — placed at top level under the gap rule, so that
+  `api/` never imports `cli/`. Logged in checkpoint 1.
+- `src/optica/pipeline.py` — the four-step resumption state model, placed at top
+  level because both surfaces consume it and it reads staging, `dataset/`,
+  `checkpoints/` and the export container. Logged in checkpoint 3.
+- `optica run`'s CLI body in `cli/classify.py` — the mid-pass scope widening.
+**Action taken:** the row now names all three. `CLAUDE.md` is standing
+instruction read automatically by pass 6, so a scope table that understates what
+exists is live rather than historical.
+**Not corrected:** `notes/passes/pass-5.md`'s Build list. Its pass is closed and
+the omission is historical, per the precedent applied to `pass-0.md` and
+`pass-2.md` and against the one applied to `pass-3.md` and `pass-4.md`, which
+were corrected because they were still unused.
+**Why `optica run` was missing in the first place:** no pass's scope named it,
+though three artifacts assumed pass 5 owned it — `pass-5.md`'s own amended item
+5 refers to *"`optica run`'s R/C/S"* as a prompt this pass adds, pass 2 handed
+forward *"Pass 5: `optica run` sequencing"*, and pass 4 handed forward *"`run`'s
+`--output` cannot see a trailing slash"*. It is the fifth instance of pass
+prompts written from the plan and never read back against it, and the only one
+that was a missing scope line rather than a wrong claim. Caught by pass 5's
+opening message, which replaced the gap rule's *log and keep building* with
+*say so loudly*, on the grounds that pass 6 writes no `src/` and there is no
+later pass to inherit a log entry.
