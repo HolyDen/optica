@@ -31,6 +31,7 @@ from PIL import Image
 from optica.cli.main import app
 from optica.exceptions import ExitCode, OpticaCLIPLoadError
 from optica.input import openimages as oi
+from optica.input.validation import RejectReason
 from tests.unit.input.test_openimages import LABEL_MAP, FakeGCS, _dataset
 
 
@@ -316,13 +317,17 @@ class FakeScorer:
     """Stands in for the CLIP model: scores by bytes, records every call."""
 
     def __init__(self) -> None:
-        self.score_fn: Callable[[str, bytes], float] = lambda folder, data: _score_of(
-            data
+        # `float | None`, as the real scorer is: None is an image it could
+        # not open, which is how the unreadable disposition reaches CLIP.
+        self.score_fn: Callable[[str, bytes], float | None] = (
+            lambda folder, data: _score_of(data)
         )
         self.interrupt_on: str | None = None
         self.loads: list[bool] = []
         # (class folder name, prompts, [(file name, bytes, score)])
-        self.calls: list[tuple[str, list[str], list[tuple[str, bytes, float]]]] = []
+        self.calls: list[
+            tuple[str, list[str], list[tuple[str, bytes, float | None]]]
+        ] = []
 
     def score(self, images, prompts, *, on_image=None):
         folder = images[0].parent.name if images else ""
@@ -502,3 +507,71 @@ class TestGroupedUnderCurate:
     def test_no_grouped_class_means_no_model_load(self, world, scorer):
         assert app.invoke_guarded(["fetch", "-c", "cat,dog", "-i", "2", "--yes"]) == 0
         assert scorer.loads == []
+
+
+class TestUnreadableAutoFetchedImages:
+    """Auto-fetched files are reported as a count, never with reasons.
+
+    Plan § "Unreadable images — pre-flight verification": disposition follows
+    ownership. Per-file reasons are for user-provided files alone, which is what
+    ``local.preflight`` lists and nothing on this path does.
+    """
+
+    def test_unreadable_downloads_report_a_count_and_never_a_reason(
+        self, world, fake_home, monkeypatch, capsys
+    ):
+        # Constructed, not inherited: every body the CDN returns is undecodable,
+        # so the whole fetch takes the unreadable disposition.
+        monkeypatch.setattr(
+            "tests.unit.cli.test_fetch_command._jpeg_for",
+            lambda url: b"<html>gone</html>",
+        )
+        code = app.invoke_guarded(
+            ["fetch", "-c", "cat,dog", "-i", "5", "--yes", "--verbose"]
+        )
+        captured = capsys.readouterr()
+        assert code == ExitCode.SUCCESS, captured.err
+        assert _images(_staging(fake_home) / "cat") == []
+        tried = len(world.image_requests)
+        assert tried > 0
+        assert f"Skipped 0 dead links, {tried} unreadable downloads" in captured.out
+        assert "Fetch complete — 0 images across 2 classes" in captured.out
+        printed = captured.out + captured.err
+        assert [r for r in RejectReason if str(r) in printed] == []
+
+    def test_curate_over_what_they_leave_behind_aborts_with_no_reasons(
+        self, world, fake_home, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            "tests.unit.cli.test_fetch_command._jpeg_for",
+            lambda url: b"<html>gone</html>",
+        )
+        monkeypatch.setattr("optica.cli.classify.load_web", lambda: None)
+        assert app.invoke_guarded(["fetch", "-c", "cat,dog", "-i", "5", "--yes"]) == 0
+        capsys.readouterr()
+        # Deleted at fetch-write, so curation's abort has a count and nothing
+        # else to say: the user never chose these files and cannot repair them.
+        assert app.invoke_guarded(["curate"]) == ExitCode.ERROR
+        captured = capsys.readouterr()
+        err = captured.err
+        assert "No fetched images are staged for curation." in err
+        printed = captured.out + err
+        assert [r for r in RejectReason if str(r) in printed] == []
+        assert str(_staging(fake_home)) not in printed
+
+    def test_clip_scoring_reports_unreadable_as_a_count(
+        self, world, fake_home, project_dir, scorer, capsys
+    ):
+        # An image CLIP cannot open scores None — the same disposition, at the
+        # only other point auto-fetched bytes are read.
+        scorer.score_fn = lambda folder, data: None
+        code = app.invoke_guarded([*_CLIP, "-i", "5"])
+        captured = capsys.readouterr()
+        assert code == ExitCode.SUCCESS, captured.err
+        for name in ("cat", "dog"):
+            assert (
+                f"{name}: 10 scored, 0 at or above 0.25, 0 kept (10 could not be read)"
+                in captured.out
+            )
+        printed = captured.out + captured.err
+        assert [r for r in RejectReason if str(r) in printed] == []

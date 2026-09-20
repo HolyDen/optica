@@ -3688,3 +3688,47 @@ evidence.
 **One observation with no owner.** `tests/unit/utils/test_prompts.py`'s `TestPlanValuesStillToImplement` holds live tests for behaviour pass 2 shipped, including both F5 branches; its own comment says so. The class name is stale for its contents. Not fixed here — it is test organisation, not scope.
 
 **Record correction.** The entry above, and the two commits before it, were rebuilt locally on 19 September: they carried 16 September where the work ran from the 16th to the 18th, and the `spec/` commit message carried the same date. Nothing had been pushed. The rebuilt commits carry author date 2026-09-18 and committer date 2026-09-19; `backup/pre-date-fix` holds the originals until this is settled.
+
+### Pass 5, item 7 — the zero-readable abort on `curate` and `clip`: checked, no defect
+**Pass:** 5   **Date:** 2026-09-20   **Where:** `tests/unit/cli/test_fetch_command.py::TestUnreadableAutoFetchedImages`
+**What was asked:** plan l.945 and l.949 — auto-fetched images (`curate`, `clip`) are
+reported as an **aggregate count**; per-file reasons belong to user-provided files
+alone. Pass 5 item 7 was to check the shipped code and fix it if it listed reasons on
+an auto-fetched path.
+
+**What the shipped code prints.** No auto-fetched path carries a reason to print.
+`RejectReason` reaches the terminal through exactly one function, `reasons_summary`
+(`input/validation.py`), and it has two call sites: `local.preflight`'s zero-readable
+raise and `cli/classify.py::_report_unreadable`. Both are user-provided input only —
+`preflight` is called once, from `_label_body` on `--folder`/`--manifest`;
+`_report_unreadable` is called from the labeling copy, the `--manifest`
+materialization and `_ingest_dataset` (`--dataset`, read in place). The auto-fetched
+reports carry an `int`, not a reason: `ClassFetchReport.unreadable` (printed as
+`Skipped N dead links, M unreadable downloads and K duplicates`) and
+`ClipFilterReport.unreadable` (printed as `(M could not be read)`).
+**No change to `src/` was needed, and none was made.**
+
+**Two observations that go with it, neither a defect.**
+- `curate`'s zero-images abort is `curation.load_view`'s
+  *"No fetched images are staged for curation."* — the count is zero and the message
+  says so. Unreadable downloads are deleted at fetch-write, so by the time curation
+  looks there is nothing left to count and no file to name. Confirmed live in
+  `.smoke/item7/` against an empty home: three lines, no per-file reason.
+- **`clip` does not abort on zero readable images at all.** It writes an empty class
+  folder by name, warns *"Fewer images than requested passed CLIP filtering"*, and
+  leaves the five-image floor to training. That matches the plan's reasoning for the
+  abort — l.949 exists so a browser does not open onto an empty session, and clip mode
+  has no browser stage — so the absence is deliberate, not a gap. Item 7's rule still
+  binds what clip *reports*, and it reports a count.
+
+**Pinned so it cannot regress.** Three tests, each constructing its own condition
+rather than inheriting one: every CDN body undecodable (the fetch report), the staging
+those downloads leave behind (the curate abort), and a scorer returning `None` for
+every image (the CLIP report). Each asserts no member of `RejectReason` appears in the
+output. `FakeScorer.score_fn` was widened to `float | None`, which is what the real
+`ImageScorer.score` returns — the narrow annotation was why the unreadable case could
+not be constructed against the fake.
+**Proved they bite:** three separate mutations, each reverted — a reason appended to
+the fetch `Skipped` line, a reason appended to `_report_clip`'s parenthetical, and a
+reason plus the staging path added to `load_view`'s `why=`. Each failed exactly its
+own test and no other.
