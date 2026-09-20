@@ -4403,3 +4403,102 @@ audited in pass 4 (`notes/verified.md` § "What `.venv` holds, against
 **`--ci` ran live** in `.smoke/ci4/` against a throwaway home: it created
 `~/.optica/config.toml`, printed one completion line, ran no pip command and
 exited 0. The idempotent second run belongs to checkpoint 5.
+
+### Pass 5 — closed
+**Date:** 2026-09-20
+**Built:** `registries.py`, `pipeline.py`, `api/simple.py`, `api/classifier.py`,
+`api/__init__.py`, `classify.py` (the task namespace), `cli/setup.py`, the
+resumption path in `optica.run()`, `optica run`'s CLI body, and additions to
+`utils/system.py`, `utils/mlstack.py`, `utils/prompts.py`,
+`training/checkpoints.py` and `export/manager.py`.
+**Milestone:** met, as **two separate claims**, both verified by a checker that
+reads disk and never opens the commands' output (`notes/verified.md` § "Pass 5
+milestone"). Claim 1 — `optica.run()` works from Python: 27.6 s, exit 0, 24 of
+24 artifact checks, three mutations proved the checker bites. Claim 2 —
+`optica setup` redoes no work on a second run: both runs exit 0, 11 of 11
+snapshot checks, four mutations proved it bites. **Claim 2 does not carry claim
+1, and neither carries installation:** every package was present before either
+setup run.
+**Scope change:** pass 5 was widened between checkpoints 0 and 1 to include
+`optica run`'s CLI body, which no pass's Build list owned.
+**Assumptions logged this pass:** 14 entries above, plus four amendment items.
+
+## The standing list — written but never exercised live
+
+Everything below is implemented and tested, and has **never run against the real
+thing**. It is the pass's most load-bearing hand-off: pass 6 writes the README
+from it, and anything a README claims that appears here is a claim no live run
+supports.
+
+**The whole browser surface.** `optica label`, `optica curate`,
+`optica.label()`, `optica.curate()` and both browser stages of `optica run` /
+`optica.run()`. The milestone run used `mode="clip"` precisely because it has no
+browser stage. *(Pass 3 drove the server and both pages live; what has never run
+is a browser stage **inside the composite pipeline**.)* With it: the suppression
+of step-level resume prompts inside `run` — asserted only as *the prompting path
+is not called* — and the API's `Labeling complete` / `Curation complete` lines.
+
+**The whole terminal prompt surface added this pass.** No prompt was ever
+answered at a real terminal: the R/C/S resumption prompt, the **C** step
+selector with its *listed but not selectable* lines, the discard confirmation,
+**S**, setup's environment prompts, the extras prompt, the variant prompt, the
+API-key prompt, the Review's `Proceed with installation?`, and both hardware
+safety prompts. Every live run this pass was non-interactive. Rich's rendering
+of those menus, and the default marker, are unverified.
+
+**`optica run`'s resumption, executed.** The state model was read live (the
+`.smoke/run3` dry run correctly reported `Starts at: train` against a
+constructed dataset), but no live run ever **started from** a resume point: the
+milestone ran a clean project from the top. Every REVIEW/TRAIN/EXPORT start is
+test-only, and every staged state in those tests is constructed rather than left
+behind by a real interruption.
+
+**Interruption and its exit codes.** No live Ctrl+C inside a `run`-driven stage.
+Exit 130 from within a stage is asserted from a raised `KeyboardInterrupt`, and
+exit 3 from a declined prompt from a scripted answer.
+
+**`optica setup`'s first-install path — all of it.** No `pip install` ran, on any
+path. That leaves unexercised: the install command construction, the **two-command
+torch split** (asserted, never executed), the per-extra progress, the failure
+path, the incomplete message and its retry command, and `--upgrade` and the
+repair path in their entirety.
+
+**Setup's environment cases, except the one this machine is in.** Live, only
+*case 1 — an active venv Optica runs from*. Never run: the mismatch hard error,
+the single-found confirmation, the more-than-one picker, creating a venv
+(`python -m venv`), the create-name collision, skip-into-system-Python, and
+**every conda path** — there is no conda on this machine, so `running_in_conda`,
+the `Conda:` label and the conda interpreter path are written and never run.
+
+**The no-GPU branch.** This machine has an RTX 4070 Ti, so `detect_gpu()` cannot
+report CPU without being replaced. Unexercised live: the
+`torch-gpu`-with-no-GPU safety prompt, the CPU index resolution, and every
+CUDA index except `cu130` (`cu126`, `cu128`, `cu129`, `cu132` are table lookups
+against a driver version no run has had).
+
+**The MPS path**, carried forward from pass 4: `select_device`'s Apple-silicon
+branch is written and has never been run.
+
+**The warning contract.** The milestone run produced **zero** warnings, so
+`RunResult.warnings` was empty and no `OpticaWarning` was ever emitted by a live
+run. Every one of the sixteen `WarningCode` values, and the `warnings.warn`
+emission itself, is exercised by tests alone — including
+`checkpoint_run_incomplete`, whose condition the live run could not produce
+because its checkpoints finished.
+
+**Tier 5.** `Classifier` has never been constructed outside a test: no live
+`clf.fetch().train().export()` chain, and no live
+`Classifier(checkpoint_path=…)`.
+
+**The Tier 3/4 functions individually.** `optica.fetch()`, `optica.train()` and
+`optica.export()` ran live only *inside* `optica.run()`; none was called on its
+own, and `optica.label()`/`optica.curate()` not at all.
+
+**`discard_after` against a locked file** — the Windows delete failure mode —
+and `--output`'s create prompt against a directory a real run had populated.
+
+**Every platform but Windows.** Every live run this pass was on Windows 11. CI
+on Ubuntu is the only Linux check there is and it installs no torch stack;
+macOS has no check at all. `optica setup --ci` has never run **on a runner**,
+outside a venv — pass 6 adds it to the matrix, and that is the first time it
+will.
