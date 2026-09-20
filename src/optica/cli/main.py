@@ -41,6 +41,7 @@ from typer._click.exceptions import (
 from optica.cli import GlobalState, get_state, split_values
 from optica.cli.classify import classify_app
 from optica.cli.config import register as register_config
+from optica.cli.setup import register as register_setup
 from optica.config.defaults import DEFAULT_TASK
 from optica.exceptions import ExitCode, OpticaError
 from optica.utils import logging as olog
@@ -305,6 +306,8 @@ def _register_tasks() -> None:
     # `optica config` is task-independent: settings are Optica's, not
     # classification's, so it sits beside the task groups rather than inside one.
     register_config(app)
+    # `optica setup` likewise: it initializes the machine, not a task.
+    register_setup(app)
 
 
 _register_tasks()

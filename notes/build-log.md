@@ -4350,3 +4350,56 @@ audited in pass 4 (`notes/verified.md` § "What `.venv` holds, against
 - **`--ci` is testable in full**, because it installs nothing and detects no
   environment. What it cannot show here is the CI environment itself: all three
   runners execute **outside a venv**, and this machine is inside one.
+
+### `optica setup` — six decisions the plan leaves to the implementation
+**Pass:** 5   **Date:** 2026-09-20   **Where:** `cli/setup.py`, `utils/system.py`,
+`utils/mlstack.py`, `utils/prompts.py`
+
+1. **Where setup's detection lives.** `utils/system.py` gains the environment
+   half — `conda_prefix`, `running_in_conda`, `is_venv`, `discover_venvs`,
+   `venv_python`, `activation_command` — and the metadata half,
+   `installed_version` and `pairing_problem`. Its docstring already said pass
+   5's setup flow was its main consumer, and none of it imports torch, which is
+   the property that module exists to hold. The one piece that **must** import
+   is `stack_import_problem`, the *"imports successfully"* half of *compatible*;
+   it went to `utils/mlstack.py`, which owns every lazy torch import. *Rejected:
+   putting the package checks in `registries.py`, which is data and resolution
+   and says it detects no hardware.*
+
+2. **`--ci` returns before the pre-phase exists.** Not a flag consulted inside
+   environment detection — the `if ci:` branch runs `_ci_init()` and returns, so
+   there is no code path from `--ci` to a prompt or a probe. A test replaces
+   every detection entry point with a function that fails the test, and another
+   replaces `typer.prompt`/`typer.confirm` the same way **with a terminal
+   present**, because a prompt reached in CI is a hard exit 1 by pass 1's
+   design. Mutating `--ci` to resolve the environment fails five tests.
+
+3. **Two pip commands for the torch stack, not `--extra-index-url`.** The
+   partition is `registries.py`'s; the choice is here. `--index-url` replaces
+   PyPI and `timm`/`scikit-learn` are not on the torch index (measured
+   2026-09-12), so one command cannot install all four. *Rejected:
+   `--extra-index-url`, which lets pip choose per package and can silently pull
+   a PyPI torch over the variant's build — a test asserts the flag appears in no
+   command Optica builds.*
+
+4. **Case 1 is checked before the mismatch.** The plan lists the mismatch as
+   case 2 and says case 1 "wins outright". Checking the mismatch first would
+   raise on a machine where `CONDA_PREFIX` names an environment Optica **is**
+   running from, since the two paths differ textually. Found by a test that
+   constructs an active conda environment.
+
+5. **The Review renders the per-package states under the torch line.** The plan
+   gives the Extras section as one row per extra with a size, and the
+   idempotence states as "per package". Both are printed: the extra's row, then
+   its four packages indented beneath. *Rejected: aggregating the four into one
+   state, which cannot express "three present, one absent" — the state a
+   partially installed stack is actually in.*
+
+6. **`prompts.ask` was added** for the two free-text prompts setup needs — the
+   new environment's name and the API key. It shows a default only where there
+   is one, so an Enter that means *skip* is not dressed up as a choice. Nothing
+   in it consults `--yes`, which has no role in setup at all.
+
+**`--ci` ran live** in `.smoke/ci4/` against a throwaway home: it created
+`~/.optica/config.toml`, printed one completion line, ran no pip command and
+exited 0. The idempotent second run belongs to checkpoint 5.

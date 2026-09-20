@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from optica.cli.classify import classify_app
 from optica.cli.main import app
 from optica.config.defaults import DEFAULT_TASK
 from optica.exceptions import ExitCode
@@ -63,9 +64,11 @@ class TestCommandSurface:
 
         assert set(_TASK_GROUPS) == {DEFAULT_TASK}
 
-    def test_setup_is_not_registered_yet(self):
-        # cli/setup.py is pass 5.
-        assert "setup" not in _commands()
+    def test_setup_sits_beside_the_task_groups(self):
+        # Machine initialization is Optica's business, not classification's, so
+        # `setup` is a root command rather than a member of a task group.
+        assert "setup" in _commands()
+        assert "setup" not in {c.name for c in classify_app.registered_commands}
 
 
 class TestFixedValueFlags:

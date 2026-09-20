@@ -21,7 +21,12 @@ from optica.exceptions import OpticaTorchError
 if TYPE_CHECKING:
     import torch
 
-__all__ = ["import_torch_stack", "prepare_hub", "select_device"]
+__all__ = [
+    "import_torch_stack",
+    "prepare_hub",
+    "select_device",
+    "stack_import_problem",
+]
 
 
 def import_torch_stack() -> tuple[ModuleType, ModuleType]:
@@ -74,3 +79,27 @@ def prepare_hub() -> None:
     """
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     logging.getLogger("huggingface_hub").propagate = False
+
+
+def stack_import_problem() -> str | None:
+    """Why an installed torch stack will not import, or None.
+
+    The second half of *compatible*: the pairing rule, then "imports
+    successfully". A package that is installed but will not import is a
+    different failure from a version mismatch — it comes from a broken driver or
+    a corrupt wheel, which reinstalling the pairing may not fix — and `optica
+    setup`'s repair message says which of the two it found.
+
+    Imports only what is already installed, and never raises: the caller is
+    deciding whether to repair, not trying to use the stack.
+    """
+    import importlib
+
+    for package in ("torch", "torchvision", "timm", "sklearn"):
+        try:
+            importlib.import_module(package)
+        except ImportError:
+            continue  # absent, not broken: that is the installer's business
+        except Exception as exc:  # noqa: BLE001 - any failure is the answer
+            return f"{package} is installed but will not import: {exc}"
+    return None

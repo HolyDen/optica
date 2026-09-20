@@ -26,6 +26,7 @@ from optica.exceptions import ExitCode, OpticaError, OpticaValidationError
 __all__ = [
     "CLASS_PROMPT",
     "PromptCategory",
+    "ask",
     "ask_class_names",
     "choose",
     "confirm",
@@ -47,6 +48,22 @@ def ask_class_names() -> str:
     ``--classes`` absent ask the same question.
     """
     answer: str = typer.prompt(CLASS_PROMPT, default="", show_default=False)
+    return answer.strip()
+
+
+def ask(question: str, *, default: str = "") -> str:
+    """Ask for a free-text value and return the answer, trimmed.
+
+    The one free-text prompt shape, used by ``optica setup`` for the new
+    environment's name and for an API key. It shows its default only where there
+    is one, so an Enter that means *skip* is not dressed up as a choice.
+
+    The caller has already decided a prompt can fire; nothing here consults
+    ``--yes``, which has no role in ``optica setup`` at all.
+    """
+    answer: str = typer.prompt(
+        question, default=default, show_default=bool(default)
+    )
     return answer.strip()
 
 

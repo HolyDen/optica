@@ -22,17 +22,26 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 
 __all__ = [
     "Accelerator",
     "GPUInfo",
     "SystemInfo",
+    "activation_command",
+    "conda_prefix",
     "declared_venv",
     "detect_gpu",
     "detect_system",
+    "discover_venvs",
+    "installed_version",
+    "is_venv",
+    "pairing_problem",
+    "running_in_conda",
     "running_in_venv",
     "venv_path",
+    "venv_python",
 ]
 
 
@@ -249,4 +258,130 @@ def detect_system() -> SystemInfo:
         venv=venv_path(),
         declared_venv=declared_venv(),
         gpu=detect_gpu(),
+    )
+
+
+# ------------------------------------------------------- environments
+
+
+def conda_prefix() -> Path | None:
+    """The environment ``CONDA_PREFIX`` names, or None.
+
+    A conda environment carries its own Python, so ``sys.prefix`` and
+    ``sys.base_prefix`` match and no ``pyvenv.cfg`` exists — neither venv signal
+    sees one, which is why the variable is read directly.
+    """
+    declared = os.environ.get("CONDA_PREFIX")
+    return Path(declared) if declared else None
+
+
+def running_in_conda() -> bool:
+    """Whether Optica is **executing** inside the active conda environment."""
+    prefix = conda_prefix()
+    if prefix is None:
+        return False
+    try:
+        return Path(sys.prefix).resolve().is_relative_to(prefix.resolve())
+    except OSError:  # pragma: no cover - an unreadable prefix is not ours
+        return False
+
+
+def is_venv(path: Path) -> bool:
+    """Whether ``path`` is a virtual environment, by its ``pyvenv.cfg``.
+
+    The marker the ecosystem agrees on. Name-agnostic on purpose: setup's scan
+    must find ``env/`` and ``.venv311/`` as readily as ``.venv/``.
+    """
+    return (path / "pyvenv.cfg").is_file()
+
+
+def discover_venvs(root: Path) -> list[Path]:
+    """Virtual environments **one level** inside ``root``, name-sorted.
+
+    Rooted at the current working directory — the same place the create prompt
+    writes ``.venv`` — which is what decides which environments the *exactly one
+    found* and *more than one found* cases can ever see. One level only: a scan
+    that descended would find environments belonging to unrelated projects.
+    """
+    if not root.is_dir():
+        return []
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:  # pragma: no cover - an unreadable cwd is not ours to fix
+        return []
+    return [entry for entry in entries if entry.is_dir() and is_venv(entry)]
+
+
+def venv_python(path: Path) -> Path:
+    """The interpreter inside a virtual environment.
+
+    ``Scripts/`` on Windows, ``bin/`` everywhere else — the difference
+    ``CLAUDE.md`` names, kept in one place so no caller hardcodes either.
+    """
+    if platform.system() == "Windows":
+        return path / "Scripts" / "python.exe"
+    return path / "bin" / "python"
+
+
+def activation_command(path: Path, shell: str | None = None) -> str:
+    """The command that activates ``path``, for the shell this OS implies.
+
+    Reported whenever the resolved environment is not the active one: without
+    it setup reports success, the next command raises ``OpticaTorchError``
+    saying *"Run: optica setup"*, and the user is sent back to the command they
+    just finished.
+    """
+    if (shell or platform.system()) == "Windows":
+        return f"{path}\\Scripts\\activate"
+    return f"source {path}/bin/activate"
+
+
+# ------------------------------------------------------- installed packages
+
+
+def installed_version(package: str) -> str | None:
+    """The installed version of ``package``, or None when it is absent.
+
+    Read from distribution **metadata**, so nothing is imported: setup asks this
+    about torch while deciding whether to install torch.
+    """
+    try:
+        return metadata.version(package)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _public(version: str) -> str:
+    """A PEP 440 version without its local label: ``2.14.0+cu130`` → ``2.14.0``."""
+    return version.split("+", 1)[0]
+
+
+def pairing_problem() -> str | None:
+    """Why the installed torch and torchvision do not pair, or None.
+
+    The **pairing rule** is the constraint that actually exists: the four setup
+    packages are deliberately unpinned, so there is no version floor to compare
+    against. ``torchvision`` declares an exact ``torch==`` pin, and it declares
+    the **public** version on the CUDA index as well as on PyPI — measured
+    2026-09-12 — so the same comparison works on both paths.
+
+    Read through ``importlib.metadata``, which parses the metadata as RFC 822
+    headers: the CUDA wheel's ``METADATA`` uses CRLF, so a hand-rolled line
+    split yields a trailing carriage return on every value.
+    """
+    torch_version = installed_version("torch")
+    vision_version = installed_version("torchvision")
+    if torch_version is None or vision_version is None:
+        return None
+    required = None
+    for requirement in metadata.requires("torchvision") or []:
+        name, _, rest = requirement.partition(" ")
+        if name.strip() == "torch" and "==" in rest:
+            required = rest.strip(" ()").removeprefix("==").strip()
+            break
+    if required is None or _public(torch_version) == _public(required):
+        return None
+    return (
+        f"torchvision {vision_version} requires torch {required}, "
+        f"but torch {torch_version} is installed"
     )
