@@ -4302,3 +4302,51 @@ plus what building it added.
   Windows failure mode for a delete — has never run.
 - **The `--output` create prompt and S's staging clear** likewise ran against
   constructed trees, never against a directory a real run had populated.
+
+### Amendment item 4 — `optica.run(start_at=…)`
+**Pass:** 5   **Date:** 2026-09-20   **Where:** observation; `spec/` untouched
+Public API surface the plan does not specify, added in the last pass that can
+add any. § "Python API" enumerates the API's parameters and this is not among
+them; the plan's own mapping rule says a prompt *answer* has no API equivalent
+(`--yes`, `--ci` and `--force` have none), while the terminal's **C** answer
+names a *step*, which nothing else can carry into `optica.run()`. The reasoning
+and the three rejected alternatives are logged above and the human has not
+reopened them. **The plan should say whether the parameter exists**, rather than
+leaving the code to have decided: a parameter cannot be removed after V1 without
+breaking callers, and the next reader has no way to tell a specified parameter
+from one the implementation invented.
+
+### Pass 5, checkpoint 4 — what a green `optica setup` will NOT mean
+**Pass:** 5   **Date:** 2026-09-20   **Where:** stated **before** the run, as at
+checkpoint 3
+This machine's `.venv` already holds **all extras plus the whole torch stack**,
+audited in pass 4 (`notes/verified.md` § "What `.venv` holds, against
+`pyproject.toml`'s declared dependencies and extras"). That decides what a live
+`optica setup` can and cannot show:
+
+- **The idempotent second run is the easy case and is the one that will run.**
+  Every package is present, so the Skip path is what executes: setup finds a
+  compatible installed set and installs nothing. **A green idempotency run is
+  evidence that setup does not redo work. It is not evidence that installation
+  works.**
+- **The first-install path will not run live at all.** No `pip install` will be
+  executed against a missing package, so the install command construction, the
+  per-extra progress bars, the failure path and the incomplete message are
+  covered by tests alone. Running the real thing would mean uninstalling the
+  torch stack from the environment the rest of this pass depends on.
+- **The two-command install split is therefore unverified end to end.** Pass 0
+  measured that `timm` and `scikit-learn` are absent from the torch index and
+  that `--index-url` replaces PyPI; the commands built from that partition are
+  asserted in tests, never run.
+- **Which setup branch is testable on this machine** (pass-5.md's *Record*):
+  - **GPU-detected: yes.** `nvidia-smi` reports an RTX 4070 Ti with driver CUDA
+    13.1, so the hardware scan's CUDA branch, the `torch-cpu`-on-a-CUDA-machine
+    safety prompt, and `torch-auto` resolving to the `cu130` index are all
+    exercisable live.
+  - **No-GPU: no.** Nothing on this machine can make `detect_gpu()` report CPU
+    without replacing it, so the `torch-gpu`-with-no-GPU safety prompt and the
+    CPU index resolution are written-but-never-run live, the same standing as
+    pass 4's MPS path. Tests construct the condition by replacing the probe.
+- **`--ci` is testable in full**, because it installs nothing and detects no
+  environment. What it cannot show here is the CI environment itself: all three
+  runners execute **outside a venv**, and this machine is inside one.
