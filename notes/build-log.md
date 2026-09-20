@@ -4231,3 +4231,74 @@ replace and landed on the *labeling* resume prompt instead — three call sites
 share that line. The run tests passed, which is what exposed it: a mutation that
 changes nothing is not evidence that a test bites. Re-applied by line number,
 two tests failed as they should.
+
+### For the plan amendment list — three items pass 5 found and did not act on
+**Pass:** 5   **Date:** 2026-09-20   **Where:** observations; `spec/` untouched
+Gathered here so the next reader does not re-derive them.
+
+1. **`optica.export` — the plan fixes two things that cannot both exist.**
+   § "Python API" makes `optica.export()` a Tier 3/4 flat alias (its own example
+   calls it) and § "Code Structure" makes `src/optica/export/` the Export
+   Manager's package. Only one `export` attribute can exist on the `optica`
+   package object, so the code currently arbitrates. **An amendment should say
+   the function wins, and that the subpackage must be imported during package
+   init for the alias to survive** — the alias is stable only because
+   `api/simple.py` imports `optica.export` at module level, which makes the
+   submodule's first load happen before the alias is bound. Proven by making
+   that import lazy: four of five import orders then break. See the entry above.
+
+2. **The R row's reading took six passages to establish.** That
+   `optica.run()` honours **R** follows from l.195's table row, l.1335 putting
+   the API under that table, and l.1339 making it binding row by row "with no
+   exceptions" while excepting only `config --init`; l.752 supplies what R
+   means, and l.1347/l.1380 are about `dry_run`'s `plan` rather than about
+   `run()`, so they are not counter-evidence. The plan is clear enough to decide
+   and the decision was made, but **§ "Python API" says nothing about
+   resumption**, and the next reader should not have to assemble six passages.
+   An amendment should state it where the API is specified.
+
+3. **The example block contradicts its own prose.** At l.744-752 the prompt
+   reads *"Resume from last completed step (training)?"* while the sentence
+   below says *"R resumes from the **last incomplete** step"*, and training is
+   the ✗ incomplete one in that very example. The parenthetical names the right
+   step; the label does not. The prose is normative and the code follows it; the
+   literal string is reproduced as written, because output text is the plan's to
+   fix.
+
+### Pass 5, checkpoint 3 — what was NOT exercised live
+**Pass:** 5   **Date:** 2026-09-20   **Where:** stated before building, restated after
+A live end-to-end `optica run` was out of scope: it drives both browser steps
+and a real training run. **A green checkpoint 3 is not evidence that the chain
+ran.** The list below is the prediction made at the checkpoint 2 gate, unchanged,
+plus what building it added.
+
+**Predicted, and still true:**
+- No real browser session opened by `run`'s curate or label stage, so no live
+  check that the step-level resume prompt is suppressed **while a browser step
+  resumes** — only that `run` does not call the prompting path.
+- No live interrupt (Ctrl+C) inside a `run`-driven training stage; exit 130 from
+  within a stage is asserted from a raised `KeyboardInterrupt`, not a signal.
+- No live resume of a genuinely interrupted pipeline: every staged state is
+  **constructed** on disk, never left behind by an interrupted run.
+- No live export of a model trained inside the same `run` invocation.
+- The four-step status model is verified against constructed states only, so a
+  state real usage can produce but the fixtures do not construct is unverified.
+
+**Added while building:**
+- **The only live `optica run` was `--dry-run`**, in `.smoke/run3/`. It printed
+  the mode, the classes, the destination and `Starts at: train` against a
+  constructed dataset, and exited 0. No stage ran.
+- **No prompt was answered at a real terminal.** The R/C/S prompt, the step
+  selector, the discard confirmation and **S** are driven through scripted
+  `typer.prompt`/`typer.confirm`, so what a person actually sees — Rich's
+  rendering of the menu, the default marker, the ✓/✗ glyphs on a non-UTF-8
+  console — is unverified.
+- **The per-stage completion lines the API now prints have not been seen from a
+  real `optica run`.** `report_training` is covered through `optica train`'s
+  existing tests, and `Labeling complete` / `Curation complete` are not
+  exercised by any browser session at all.
+- **`discard_after` was exercised on constructed trees only**, so the case where
+  a checkpoint folder or an export folder is locked by another process — the
+  Windows failure mode for a delete — has never run.
+- **The `--output` create prompt and S's staging clear** likewise ran against
+  constructed trees, never against a directory a real run had populated.
