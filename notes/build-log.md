@@ -3732,3 +3732,95 @@ not be constructed against the fake.
 the fetch `Skipped` line, a reason appended to `_report_clip`'s parenthetical, and a
 reason plus the staging path added to `load_view`'s `why=`. Each failed exactly its
 own test and no other.
+
+### Pass 5 scope widened — `optica run`'s CLI body
+**Pass:** 5   **Date:** 2026-09-20   **Where:** decided between checkpoint 0 and
+checkpoint 1, not in the pass prompt
+**Missing:** **no pass's Build list owns `optica run`.** `CLAUDE.md` § "Build
+order" gives pass 2 `input/`, pass 3 `server/`, pass 4 `training/`/`export/` and
+pass 5 `api/`, `cli/setup.py` and the registries. The composite command appears
+in none of them, and `cli/classify.py` accordingly ships it as
+`raise _not_yet("optica run")` — live, `optica run -c cat,dog --yes` prints
+*"optica run is not available in this build."* It is the plan's **Tier 1 entry
+point** (§ "Python API", five-tiers table) with a section of its own
+(§ "`optica run` resumption and preconditions"), and pass 6 forbids `src/`.
+
+**Assumed → decided:** pass 5 builds it. Not an assumption logged and carried:
+the gap was reported at checkpoint 0 as a closing window and the human widened
+the pass in reply. Recorded here because the decision was taken **between
+checkpoints**, so nothing in `notes/passes/pass-5.md` shows it.
+
+**Why this is a missing scope line rather than a decision taken against it** —
+three artifacts already assume pass 5 owns it, while no Build list says so:
+- `notes/passes/pass-5.md` item 5: *"Every prompt this pass adds — `optica
+  setup`, **`optica run`'s R/C/S**, any other"*.
+- Pass 2's forward hand-off: *"Pass 5: `optica run` sequencing"*.
+- Pass 4's forward hand-off: *"`run`'s `--output` can't see a trailing slash"*.
+
+**Order fixed by the human:** registries → `api/` → `optica run`'s CLI body →
+`cli/setup.py` → the live runs. The body delegates to `optica.run()`, so it
+cannot precede the API.
+
+**Gate:** before any of it is written, § "`optica run` resumption and
+preconditions" is read in full and checkpoint 2 reports what the work actually
+is — what is genuine delegation and what is CLI-only (the R/C/S prompt,
+`--output`, exit codes, the `--yes` interaction) — with a measurement rather
+than the estimate "thin delegation". If it is a module rather than a wrapper,
+pass 5 stops there and the human decides again.
+
+**Reversible?** Yes, and cheaply, up to the moment the body is written: reverting
+to `_not_yet` is a one-line change. After V1 ships it is not — a stubbed Tier 1
+entry point is what shipping would make permanent.
+
+### The registries: placement and four decisions
+**Pass:** 5   **Date:** 2026-09-20   **Where:** `src/optica/registries.py`
+**Missing:** plan § "Code Structure" ends with *"the `TASK_REGISTRY`/
+`EXTRAS_REGISTRY` have no stated home … both should be placed when the API
+namespace and setup registry are built"*. That is the only instruction; the file
+is not in the tree.
+
+**Assumed:** a new top-level `src/optica/registries.py`, holding both registries,
+the group helpers, `resolve_setup`, the `--include-extras`/`--exclude-extras`
+name validation, the Review's size arithmetic and the CUDA index table.
+**Why:** two layers read this data — `cli/setup.py` resolves a selection from it,
+and `TASK_REGISTRY`'s `api_namespace`/`tier5_class` describe the API's task
+namespace. A home under `cli/` would have `api/` importing the CLI.
+**Reversible?** Yes — one module, no dependants outside pass 5's own work yet.
+
+Four decisions inside it, none of them stated by the plan:
+
+1. **Which exception class the extras-flag errors raise.** `OpticaValidationError`,
+   not `OpticaSetupError`. § "Exceptions" scopes `OpticaSetupError` to
+   environment resolution, hardware detection and install failure, and lists
+   *"mutually exclusive input flags"* under `OpticaValidationError`; an unknown
+   registry key or a both-sides conflict is the input contract, not the
+   subsystem's. The errors carry `options=` (every valid key) per the
+   fixed-value-flag rule.
+2. **How the Review's download total renders below 1GB.** The plan shows one
+   total, `~0.9–3.1GB`, and no sub-gigabyte case. Rule taken: **one unit for the
+   whole figure, chosen by the top of the range** — GB at or above 1000MB, MB
+   below — with half-up rounding to one decimal in GB. That reproduces the
+   plan's figure exactly (250+5+600 = 855MB → 0.9GB; 2500+5+600 = 3105MB →
+   3.1GB) and renders `torch-cpu`+`web`+`clip` as `~855MB` rather than `~0.9GB`.
+   A per-endpoint unit was rejected: it would print `~855MB–3.1GB`, whose two
+   ends cannot be compared at a glance. `size_breakdown()` exists so the Review
+   cannot print the total without the rows it is a sum of.
+3. **The CUDA index is a table, not a format string.** `notes/verified.md`
+   § "Which CUDA indexes exist on `download.pytorch.org`" (2026-09-12) records
+   `cu126`, `cu128`, `cu129`, `cu130`, `cu132` published and **`cu131` 403 —
+   never published**. `cuda_index_url()` therefore returns the newest published
+   index at or below the driver's CUDA version, so a 13.1 driver (this machine)
+   takes `cu130`. `torch-gpu`'s own `index_url` stays **pinned** to `cu130`, which
+   is what the plan's `cu<XXX>` gate item asks for; only `torch-auto` resolves.
+4. **Ruff's `allowed-confusables`.** The en dash in `~250MB–2.5GB` and
+   `~0.9–3.1GB` is the plan's own character, transcribed exactly; RUF001/2/3
+   flag it as confusable with a hyphen. `pyproject.toml` now allows that one
+   character repo-wide rather than carrying seven `# noqa`s. Every other
+   confusable stays flagged.
+
+**Not built here, deliberately:** the prompts (`resolve_setup` takes the
+selection as injected callables), the pip commands, and the Review's rendering.
+`PYPI_PACKAGES`/`INDEXED_PACKAGES` carry the partition those commands need —
+`timm` and `scikit-learn` are absent from the torch index and `--index-url`
+replaces PyPI rather than adding to it — but building the command is
+`cli/setup.py`'s, at checkpoint 3.

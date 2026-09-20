@@ -84,6 +84,12 @@ ignore = [
     "D107",   # Google style documents __init__ args in the class docstring
     "ANN401", # *args/**kwargs on framework overrides are genuinely Any
 ]
+# The en dash is the plan's own range character: `EXTRAS_REGISTRY`'s
+# `size_estimate` values and the Review's download total are transcribed from
+# § "Registry and resolution" exactly, and a hyphen there would print something
+# the plan does not say. Every other confusable stays flagged.
+allowed-confusables = ["–"]
+
 
 [tool.ruff.lint.per-file-ignores]
 # Test functions document themselves through their names, and their signatures
