@@ -1609,3 +1609,88 @@ loss. File restored (byte-compared); all checks pass again.
 **Consequence:** pass 4's milestone — `optica train` and `optica export` running
 to completion on a small real dataset, export consuming that training run — is
 met. What the path did **not** exercise is recorded in the build log's close.
+
+## Pass 5
+
+### Pass 5 milestone, claim 1 — `optica.run()` works from Python
+**Date:** 2026-09-20
+**How:** `.smoke/pass5/drive_run.py`, a plain Python caller (not the CLI, not
+pytest), run by `.venv`'s interpreter in `.smoke/pass5/project/` with a private
+`HOME`/`USERPROFILE` (`.smoke/pass5/home`, seeded only with the Open Images
+class-list cache) and the real Hugging Face cache. It calls
+`optica.run(["cat","dog"], mode="clip", images_per_class=10,
+train_config=optica.TrainConfig(epochs=2))`, writes `result.json`, and asserts
+nothing. Verification is a separate script, `.smoke/pass5/verify_run.py`, which
+reads `result.json` and the project tree and **never opens `drive.out` or
+`drive.err`** — a run that reported success while writing nothing fails it.
+
+**How the browser was kept out:** `mode="clip"`. Clip mode has no browser stage
+at all — the plan's own answer for a fully non-interactive pipeline. Nothing was
+stubbed, monkeypatched or answered; the label and curate stages were therefore
+**not exercised** (see the standing list in `notes/build-log.md`).
+
+**Result:** exit 0 in **27.6 s**. Fetch (clip) → train → export, one call.
+
+| Artifact | What the checker found |
+|---|---|
+| `dataset/` | cat 10, dog 10 — equal to `FetchResult.counts`; no `.dataset.partial` |
+| Checkpoints | 2 retained; `best_checkpoint` is the first of `TrainResult.checkpoints` |
+| `checkpoint_info.json` | `val_accuracy` 0.500 = `best_val_accuracy`; `epochs_trained` 2 = `epochs_run`; `early_stopped` **false**, equal to `TrainResult.early_stopped` — read from the file, not from the object that produced it; `config` block holds exactly `TrainConfig`'s eleven keys; `classes` = the dataset's sorted folder names |
+| Phases | `[1, 1]`, summing to `epochs_requested` 2 |
+| Logs | both copies present and byte-identical |
+| Export folder | `class_names.json`, `model.pt`, `model_info.json`, `usage_examples.md` — exactly `ExportResult.files`; no `.partial` |
+| Cross-artifact | `class_names.json` == `model_info["classes"]` == the checkpoint's `classes`; `model_info`'s `epochs_trained`/`early_stopped` equal the checkpoint's |
+| `model.pt` | loads under `torch.load(weights_only=True)`; its `classes` and `num_classes` agree with `class_names.json` |
+| Staging | consumed: `~/.optica/staging` empty |
+
+**24 checks, 24 passed.** Proved to bite by three artifact mutations, each
+reverted: one dataset image removed (`counts` check failed, 9 vs 10),
+`model_info.json`'s `classes` edited to `["cat","fox"]` (the three-way class
+agreement failed), and `early_stopped` deleted from the **best** checkpoint's
+info (two checks failed). A fourth attempt deleted the field from a *non-best*
+checkpoint and correctly changed nothing — the checker reads the folder the
+result names — which is why that attempt was repeated against the right one.
+
+**Note:** the run produced **zero warnings**, so `RunResult.warnings` was empty
+and no `OpticaWarning` was emitted. The warning contract is exercised by tests
+only.
+
+### Pass 5 milestone, claim 2 — `optica setup` redoes no work on a second run
+**Date:** 2026-09-20
+**How:** `.smoke/pass5/setupproj/`, private `HOME`/`USERPROFILE`
+(`.smoke/pass5/setuphome`), whose `~/.optica/config.toml` was seeded with
+`epochs = 20` before anything ran. Then: snapshot → `optica setup --all-extras`
+→ snapshot → `optica setup --all-extras` → snapshot, each snapshot written by
+`.smoke/pass5/snapshot.py`. `.smoke/pass5/verify_setup.py` compares the three
+and **opens neither run's log**.
+**What "without redoing work" was taken to mean**, stated rather than assumed:
+no watched distribution's version changed, no distribution's `dist-info`
+directory was rewritten (`mtime_ns` is what pip touches on a reinstall),
+site-packages gained no entry, and the config's bytes are identical.
+
+**Result:** both runs exit 0. All seven watched distributions — torch,
+torchvision, timm, scikit-learn, fastapi, uvicorn, open-clip-torch — were
+**already installed before either run**, which is the premise and the limit.
+Run 1 wrote the config and preserved `epochs = 20`; run 2 changed no version, no
+`dist-info` mtime, no site-packages entry count (146 → 146) and not even the
+config's `mtime_ns`. **11 checks, 11 passed**, proved to bite by four snapshot
+mutations, each reverted: a bumped version, a bumped `dist-info` mtime with a
+site-packages entry, a changed config digest and mtime, and run 1's config text
+with the user's value stripped out.
+
+**This is the Skip path and nothing more.** No `pip install` ran, so it is
+evidence that setup does not redo work and **not** evidence that installation
+works.
+
+### `optica setup`'s Review printed a raw glyph on a non-UTF-8 console
+**Date:** 2026-09-20
+**How:** the live run above, on this machine's cp1255 console.
+**Result:** `PackageState.INSTALLED` held the plan's literal
+`already installed ✓`, and the tick reached the stream as a data string rather
+than through `Markers`, so `protect_streams` escaped it: the Review read
+`already installed ✓`. Not a crash — that is the designed degradation for
+arbitrary text — but the tick is one of the four status glyphs `Markers` exists
+to resolve.
+**Consequence:** fixed; the state stores `already installed` and `_review` adds
+`marks.ok`. Re-run live: `already installed +`. A glyph with a good ASCII
+stand-in must go through `Markers`, not into a constant.

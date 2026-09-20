@@ -409,10 +409,18 @@ def _safety_prompt(
 
 
 class PackageState(StrEnum):
-    """The Review's per-package states."""
+    """The Review's per-package states.
+
+    The plan writes the skip state as ``already installed ✓``, and the glyph is
+    added at render time rather than stored here: it is one of the four status
+    glyphs :class:`~optica.utils.logging.Markers` resolves against the target
+    stream, so on a non-UTF-8 Windows console it becomes ``+`` instead of the
+    backslash-escape a raw glyph in a data string degrades to. Measured live —
+    the escape is what the first Review printed.
+    """
 
     WILL_INSTALL = "will install"
-    INSTALLED = "already installed ✓"
+    INSTALLED = "already installed"
     UPGRADE = "already installed — upgrade available"
     REPAIR = "already installed — incompatible, repair"
 
@@ -510,8 +518,12 @@ def _review(state: GlobalState, plan: Plan, *, interactive: bool) -> None:
         out("    none selected")
     for name, size in rows:
         out(f"    {name:<42}{size}")
+    marks = olog.markers_for(olog.err_console)
     for package, package_state in plan.packages.items():
-        out(f"      {package:<40}{package_state.value}")
+        shown = package_state.value
+        if package_state is PackageState.INSTALLED:
+            shown = f"{shown} {marks.ok}"
+        out(f"      {package:<40}{shown}")
     if plan.hardware is not None:
         out(f"    Detected hardware: {plan.hardware.gpu.description}")
     out("")
