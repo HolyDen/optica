@@ -3922,3 +3922,113 @@ example forbids.
 6. **Browser steps that do not finish raise.** `label()` and `curate()` have no
    exit code to return, so a timeout raises `OpticaError` and an interrupt
    re-raises `KeyboardInterrupt` — the API counterparts of exit 3 and 130.
+
+### The `optica run` gate — what § "resumption and preconditions" actually asks for
+**Pass:** 5   **Date:** 2026-09-20   **Where:** measurement taken before any of
+checkpoint 3 was written, at the human's instruction
+
+**Every behaviour the section specifies, with which side owns it.**
+
+*Delegation to `optica.run()` — already built at checkpoint 2:*
+1. Mode resolution and the acquisition short-circuit — `simple._run` resolves
+   both; `short_circuits_acquisition` needs `dataset_explicit`, which the CLI
+   already knows from its own flags.
+2. The entry extras check — `simple._require_extras`: web for label/curate,
+   clip for `--mode clip` and for a blocklisted name under curate, torch for the
+   train and export steps, all before fetching begins.
+3. The stage sequence itself: acquire → train → export, with `RunResult`
+   carrying the three stage results and `None` for stages that did not run.
+4. `--dry-run`'s four resolutions (`mode`, `detection_order`, `short_circuit`,
+   `destination`). The CLI renders them; it computes none of them.
+5. Every stage's warnings, as `WarningEntry` — the CLI prints from the entries.
+
+*Shared — the component is built, both surfaces call it:*
+6. Precondition validation per stage: `curate` checks staged images
+   (`load_view`), `train` checks the dataset shape (`load_organized_dataset`),
+   `export` checks a trained checkpoint (`ranked_checkpoints`), `label` checks
+   its folder or manifest. All four already raise `Optica*Error` with fix lines
+   from `input/`, `training/` and `export/`, reached identically from either
+   surface.
+7. `label`'s `-c` resolution "the way `fetch` does" — `resolve_auto_classes`
+   with a prompter; the CLI passes `TerminalClassPrompter`, the API passes the
+   raising one. The seam exists; `run` picks the prompter.
+
+*CLI-only — no API counterpart exists, by the plan's own rules:*
+8. The `Previous session found:` block, with one `✓`/`✗` line per completed or
+   incomplete step.
+9. The top-level `[R] Resume [C] Choose step [S] Start fresh` prompt.
+10. **C** — the step selector: four steps with status
+    complete / incomplete / not started, where a step whose inputs are absent is
+    **listed but not selectable and says why**.
+11. Selecting a step earlier than the last completed one **discards the later
+    steps' staging, behind a confirmation** — a destructive branch.
+12. `--yes` auto-picks **R** at top level, which is why 11 never arises
+    unattended.
+13. **S** clears staging and starts clean (`input_manager.clear_staging` exists;
+    the choice is the CLI's).
+14. Suppressing the step-level resume prompts inside `run`, and the checkpoint
+    K/A/D/S prompt with them (Note 19) — the API has no step-level prompts at
+    all, so this is CLI-only by construction.
+15. Warnings and safety prompts still firing inside `run` (Note 19) — the CPU
+    batch-size prompt is the live example.
+16. `--output` handling: `run` currently declares the shared `Path` option,
+    which **cannot see a trailing slash** (pass 4's hand-off), so it needs
+    `export`'s `str` option and the N/C/A multi-component prompt with it.
+17. Exit-code mapping: 3 for a declined prompt or an aborted stage, 130 for an
+    interrupt, through the global handler.
+18. The per-stage `✓ X complete` / `✗ X incomplete` terminal lines for the
+    stages `run` drives — today each lives inside the standalone command body,
+    which `run` will not call.
+
+**Three things I cannot place from the section, stated rather than picked:**
+- **Where the resumption state model lives.** Deciding what is complete,
+  incomplete or not started across the four steps is a computation over
+  staging, `dataset/`, `checkpoints/` and the output folder — a *decision*, and
+  the CLI layer is specified to hold none. But in V1 only the CLI consumes it,
+  because the API behaves as though `--yes` were passed and `--yes` picks R,
+  which never needs the per-step status. `input/manager.py` and `cli/classify.py`
+  are both defensible; the section does not say.
+- **Whether `optica.run()` itself honours R.** The `--yes` table row
+  *"`optica run` top-level R/C/S resume → R — resume"* is in the table the API
+  is told to follow, so the API arguably must resume from the last incomplete
+  step. As built, `simple.run()` runs every stage and lets each one
+  short-circuit on what it finds, which is weaker than an explicit resume. If
+  the stronger reading is right, the state model is shared and the API needs
+  work too.
+- **Where the per-stage completion lines are printed.** The CLI's `✓`/`✗`
+  vocabulary is terminal output, so the API should not print it — but `run`
+  reaches its stages through `optica.run()`, which returns results rather than
+  printing them. Re-rendering from the results in the CLI is the obvious answer;
+  the plan does not confirm it.
+
+**Size, measured rather than estimated.** Comparable blocks already in
+`cli/classify.py`: `_resolve_export_output` 54 lines, `_selection_prompt` 32,
+`_mass_rejection` 61, `_checkpoint_housekeeping` 73, `_open_curation_session` 27,
+`_resume_prompt` 19. `optica run`'s command is 96 lines today, of which ~30 are
+validation and one `_not_yet`. Items 8–13 are one prompt block plus one selector
+of that same shape; 16 is `export`'s existing `str`/`_resolve_export_output`
+pattern reused; 17 and 18 are per-stage mapping. `simple.run()` is 57 + 95 lines
+and holds the sequencing. On that basis the CLI body is a **wrapper with one
+substantial prompt block**, not a module — the same shape as `_curate_body`
+(59 lines) plus `_mass_rejection` (61) — **unless** the second ambiguity above
+resolves toward a shared state model, which would add a component to `input/`.
+
+**What checkpoint 3 will NOT verify, stated before it is built.**
+A live end-to-end `optica run` is out of scope: it drives both browser steps and
+a real training run. So the following will be exercised by tests and by
+inspection only, and a green checkpoint 3 must not be read as proof the chain
+ran:
+- No real browser session opened by `run`'s curate or label stage, and so no
+  live check that the step-level resume prompt is actually suppressed **while a
+  browser step is resuming** — only that `run` does not call the prompting path.
+- No live interrupt (Ctrl+C) inside a `run`-driven training stage, so exit 130
+  from within a stage is asserted from a raised `KeyboardInterrupt`, not from a
+  real signal.
+- No live resume of a genuinely interrupted pipeline: the staged states will be
+  **constructed** on disk (staging directories, a `dataset/`, checkpoints with
+  and without the run-end fields), not left behind by an interrupted run.
+- No live export of a model trained inside the same `run` invocation; the export
+  stage is exercised over constructed checkpoints with the `.pt` writer replaced.
+- The four-step status model is verified against constructed states only, so a
+  state real usage can produce but the fixtures do not construct is unverified.
+Same discipline as pass 4's MPS path and pass 3's prompt surface.
