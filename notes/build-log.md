@@ -4184,3 +4184,50 @@ example training is the ✗ incomplete one. The parenthetical names the right
 step; the label in front of it does not. **The prose is normative and the code
 follows it**; the literal string is reproduced as the plan shows it, because
 output text is the plan's to fix. For the amendment list.
+
+### `optica run`'s CLI body — four local decisions
+**Pass:** 5   **Date:** 2026-09-20   **Where:** `cli/classify.py`
+
+1. **`--output` stays the shared `Path` option and is always a container.**
+   Pass 4 handed forward that `run`'s `--output` "cannot see a trailing slash"
+   because `Path` drops it, and that `export`'s `str` option shows the form.
+   Taken the other way: `run`'s `--output` **governs all run outputs — the
+   export folders *and* the project-local training log** (§ "`--output` path
+   handling"), so the export table's name-versus-container question cannot
+   arise. Letting the last component name a single export folder would put the
+   run's log inside a folder named after one export. `run` therefore takes
+   `train`'s `_ensure_output` — create where absent (`--yes` answers Y), hard
+   error on a file — and the trailing slash has nothing left to disambiguate.
+   *Rejected: the `str` + N/C/A treatment, which would make an incoherent
+   destination expressible in order to ask about it.*
+
+2. **`run --checkpoint-rank` takes one rank.** `RunResult` carries a single
+   `ExportResult` (§ "Result types"), so a run exports one checkpoint. Several
+   ranks is a hard error naming `optica export --checkpoint-rank 1,2`, which is
+   where multi-rank export lives. *Rejected: exporting each rank in a loop,
+   which the result type cannot represent; and silently taking the first, which
+   discards input the user wrote.*
+
+3. **The entry extras check moved after the dry-run return, and is scoped to the
+   stages that actually run.** The standing rule is that a composite entry point
+   raises "before fetching begins" — a dry run never fetches, spends no quota
+   and holds no attention, so demanding the torch stack to *print a plan* would
+   make `--dry-run` unusable on a machine that has not run `optica setup`, which
+   is exactly the machine a plan is most useful on. For the same reason a stage
+   the resume point skips no longer requires its extra: resuming at export does
+   not need the web extra. *Rejected: checking every extra unconditionally,
+   which is what pass 2's `fetch` does — `fetch` reaches its dependency within
+   seconds either way, and `run` does not.*
+
+4. **`_not_yet` is gone.** It existed so an unbuilt stage body raised a plain
+   error rather than a traceback; `optica run` was its last call site. The
+   module docstring's "stage bodies that belong to later passes" paragraph is
+   replaced by what is now true: every command's body is here, and `run` is the
+   one that hands its sequence to `optica.run()`.
+
+**A near-miss worth recording.** A mutation meant to remove `--yes`'s **R**
+answer from the resumption prompt was applied by a first-occurrence string
+replace and landed on the *labeling* resume prompt instead — three call sites
+share that line. The run tests passed, which is what exposed it: a mutation that
+changes nothing is not evidence that a test bites. Re-applied by line number,
+two tests failed as they should.

@@ -13,10 +13,11 @@ This layer maps commands to components and asks the questions; the decisions
 are the Input Manager's. Prompts live here and nowhere in ``optica.input``,
 which is what lets the Python API raise where the CLI asks.
 
-Stage bodies that belong to later passes still raise :func:`_not_yet`: the
-browser (``label``, ``curate``) in pass 3, training and export in pass 4, and
-``run``'s sequencing in pass 5. Pass 2 adds the preconditions those commands
-check before their stage begins.
+Every command's body is here as of pass 5. ``run`` is the exception to this
+module's self-containment in one direction only: it asks the top-level
+resumption question and hands the pipeline to :func:`optica.run`, because the
+sequence, the resume point and the completion lines belong to the API layer and
+a second sequencer beside it would be free to drift.
 """
 
 from __future__ import annotations
@@ -24,15 +25,18 @@ from __future__ import annotations
 import json
 import math
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import typer
 
+from optica import pipeline
+from optica.api import simple as api
+from optica.api.simple import report_training
 from optica.cli import GlobalState, get_state, split_values
 from optica.config.defaults import MODELS, MODES, SOURCES
 from optica.config.manager import ResolvedConfig, Source
@@ -40,7 +44,6 @@ from optica.config.schema import OpticaConfig
 from optica.exceptions import (
     ExitCode,
     OpticaCurationError,
-    OpticaError,
     OpticaTrainingError,
     OpticaValidationError,
 )
@@ -125,7 +128,6 @@ from optica.training.models import base_model_for
 from optica.training.splits import split_counts, training_data_hash
 from optica.training.trainer import (
     TrainingInterrupted,
-    TrainOutcome,
     TrainPlan,
     TrainSettings,
 )
@@ -187,23 +189,6 @@ def _globals(
     """Fold a command's copy of the global flags into the run's state."""
     return state.merge(
         verbose=verbose, quiet=quiet, yes=yes, force=force, dry_run=dry_run
-    )
-
-
-def _not_yet(stage: str) -> OpticaError:
-    """Return the error a not-yet-built stage raises.
-
-    Each stage's body lands in its own pass. The message is a plain statement
-    rather than an apology, and it exits ``1`` like any other
-    :class:`~optica.exceptions.OpticaError`. ``options`` is not used: that field
-    lists a fixed-value flag's valid values, and borrowing it for a build note
-    would put the wrong thing under "Valid options".
-    """
-    return OpticaError(
-        f"{stage} is not available in this build.",
-        why="Optica's command surface is complete; this stage's implementation "
-        "is not yet part of the installed version.",
-        fix="Run: optica --version to see which version you have.",
     )
 
 
@@ -1869,7 +1854,7 @@ def _train_body(
         raise typer.Exit(code=ExitCode.INTERRUPTED) from None
     finally:
         reporter.close()
-    _report_training(outcome, project_root)
+    report_training(outcome, project_root)
 
 
 CPU_BATCH_LIMIT = 16
@@ -1911,38 +1896,6 @@ def _imbalance_prompt(state: GlobalState, files: dict[str, list[Path]]) -> bool:
         olog.incomplete("Training incomplete — aborted at the class-imbalance warning.")
         raise typer.Exit(code=ExitCode.ABORTED)
     return True
-
-
-def _report_training(outcome: TrainOutcome, project_root: Path) -> None:
-    """``✓ Training complete — best val_accuracy 0.852`` and its detail lines."""
-    best = outcome.best_val_accuracy
-    olog.success(
-        "Training complete — best val_accuracy "
-        + (f"{best:.3f}" if best is not None else "n/a")
-    )
-    epochs = f"  Epochs: {outcome.epochs_run} of {outcome.epochs_requested}"
-    if outcome.early_stopped:
-        epochs += f" (stopped early — val_loss, patience {outcome.patience})"
-    olog.status(epochs)
-    phase1, phase2 = outcome.phases
-    phases = f"  Phases: {phase1} head warmup + {phase2} fine-tune"
-    if outcome.phase1_stopped_early:
-        phases += f" (head warmup stopped early after {outcome.phases_run[0]})"
-    olog.status(phases)
-    n_classes = len(outcome.split_counts)
-    absent = len(outcome.classes_without_test)
-    if outcome.test_accuracy is None or absent == n_classes:
-        olog.status("  Test: not evaluated — no class received a test allocation")
-    else:
-        loss = outcome.test_loss if outcome.test_loss is not None else float("nan")
-        line = f"  Test: accuracy {outcome.test_accuracy:.3f}, loss {loss:.3f}"
-        if absent:
-            line += f" ({absent} class{'es' if absent != 1 else ''} absent from test set)"
-        olog.status(line)
-    olog.status(
-        f"  Checkpoints: {len(outcome.checkpoints)} saved in "
-        f"./{checkpoints.CHECKPOINTS_DIR}/"
-    )
 
 
 @classify_app.command()
@@ -2306,7 +2259,303 @@ def run(
         argv=state.argv,
     )
     olog.status(resolved_mode.line)
+    names = split_values(classes)
+    rank = _single_rank(split_values(checkpoint_rank))
+    explicit_dataset = _dataset_explicit(state.argv)
+    if state.dry_run:
+        _run_dry_run(
+            state,
+            classes,
+            names,
+            resolved_mode=resolved_mode,
+            folder=folder,
+            manifest=manifest,
+            dataset=dataset,
+            dataset_explicit=explicit_dataset,
+            output=output,
+        )
+        return
     with acquire_lock("optica run"):
-        split_values(classes)
-        split_values(checkpoint_rank)
-        raise _not_yet("optica run")
+        _run_body(
+            state,
+            resolved,
+            classes,
+            names,
+            resolved_mode=resolved_mode,
+            folder=folder,
+            manifest=manifest,
+            dataset=dataset,
+            dataset_explicit=explicit_dataset,
+            output=output,
+            rank=rank,
+            overwrite=overwrite,
+            source=source,
+            images_per_class=images_per_class,
+            clip_threshold=clip_threshold,
+            model=model,
+        )
+
+
+def _single_rank(values: list[str]) -> int | None:
+    """``run`` exports one checkpoint, so it takes one rank.
+
+    `RunResult` carries a single `ExportResult`, which is what makes several
+    ranks a question for standalone ``optica export`` rather than for ``run``.
+    """
+    if not values:
+        return None
+    ranks = export_manager.parse_ranks(values, available=len(values) + 1)
+    if len(ranks) > 1:
+        raise OpticaValidationError(
+            f"optica run exports one checkpoint; {len(ranks)} ranks were given.",
+            why="A run produces one model, and its result carries one export.",
+            fix=[
+                "Run the pipeline, then export the others:",
+                "optica export --checkpoint-rank " + ",".join(values),
+            ],
+        )
+    return ranks[0]
+
+
+def _dataset_explicit(argv: Sequence[str]) -> bool:
+    """Whether ``--dataset`` was actually written on the command line.
+
+    The acquisition short-circuit turns on an **explicit** ``--dataset``; a bare
+    ``./dataset/`` never triggers it, so the default cannot be read back off the
+    resolved value.
+    """
+    return any(
+        arg in ("--dataset", "-d") or arg.startswith("--dataset=") for arg in argv
+    )
+
+
+def _run_classes(
+    state: GlobalState,
+    classes: list[str] | None,
+    names: list[str],
+    *,
+    start: pipeline.Step,
+) -> list[str]:
+    """``run`` resolves ``-c`` the way ``fetch`` does — where acquisition runs.
+
+    Prompting where a prompt can fire, hard-erroring where one cannot. A run
+    that resumes at training or export takes its classes from the dataset, so
+    the requirement does not apply to it.
+    """
+    if start in (pipeline.Step.FETCH, pipeline.Step.REVIEW):
+        return _resolve_classes(classes, "run", state)
+    return names
+
+
+def _run_dry_run(
+    state: GlobalState,
+    classes: list[str] | None,
+    names: list[str],
+    *,
+    resolved_mode: input_manager.ResolvedMode,
+    folder: Path | None,
+    manifest: Path | None,
+    dataset: Path,
+    dataset_explicit: bool,
+    output: Path,
+) -> None:
+    """The resolved plan, rendered. Every value in it is the API's."""
+    session = pipeline.inspect_session(
+        dataset=dataset,
+        project_root=Path.cwd(),
+        output=output,
+        mode=resolved_mode.mode,
+    )
+    start = session.resume_from if session.found else pipeline.Step.FETCH
+    names = _run_classes(state, classes, names, start=start)
+    result = api.run(
+        names,
+        mode=resolved_mode.mode,
+        folder=folder,
+        manifest=manifest,
+        dataset=dataset if dataset_explicit else None,
+        output=output,
+        dry_run=True,
+    )
+    plan = result.plan or {}
+    shown = ", ".join(plan.get("classes", [])) or "(from the dataset)"
+    olog.status(f"Classes: {shown}")
+    olog.status(f"Destination: {plan.get('destination')}")
+    if plan.get("short_circuit"):
+        olog.status("Acquisition: skipped — --dataset names an organized dataset")
+    olog.status(f"Starts at: {plan.get('start_at')}")
+    olog.status("Dry run — nothing was fetched, trained or written.")
+
+
+def _run_body(
+    state: GlobalState,
+    resolved: ResolvedConfig,
+    classes: list[str] | None,
+    names: list[str],
+    *,
+    resolved_mode: input_manager.ResolvedMode,
+    folder: Path | None,
+    manifest: Path | None,
+    dataset: Path,
+    dataset_explicit: bool,
+    output: Path,
+    rank: int | None,
+    overwrite: bool,
+    source: str | None,
+    images_per_class: int | None,
+    clip_threshold: float | None,
+    model: str | None,
+) -> None:
+    """Ask the top-level resumption question, then hand the pipeline over.
+
+    Every stage decision — the sequence, the resume point, the per-stage
+    warnings and the completion lines — belongs to :func:`optica.run`. What is
+    here is the part the API cannot have: the prompt.
+    """
+    config = resolved.config
+    _ensure_output(state, output)
+    start = _resume_choice(state, dataset, output, resolved_mode.mode)
+    names = _run_classes(
+        state, classes, names, start=start or pipeline.Step.FETCH
+    )
+    api.run(
+        names,
+        mode=resolved_mode.mode,
+        folder=folder,
+        manifest=manifest,
+        dataset=dataset if dataset_explicit else None,
+        model=model,
+        output=output,
+        checkpoint_rank=rank,
+        overwrite=overwrite,
+        start_at=start.value if start is not None else None,
+        fetch_config=api.FetchConfig(
+            source=source,
+            images_per_class=images_per_class,
+            clip_threshold=clip_threshold,
+            max_open_datasets_per_class=config.max_open_datasets_per_class,
+            curation_port=config.curation_port,
+            curation_timeout_minutes=config.curation_timeout_minutes,
+        ),
+        train_config=api.TrainConfig(
+            epochs=_flag_value(resolved, "epochs"),
+            batch_size=_flag_value(resolved, "batch_size"),
+            augmentation=_flag_value(resolved, "augmentation"),
+        ),
+        export_config=api.ExportConfig(checkpoint_rank=rank),
+    )
+
+
+def _flag_value(resolved: ResolvedConfig, key: str) -> Any:
+    """A config value only where a flag set it, so the API resolves the rest."""
+    if resolved.sources.get(key) is Source.FLAG:
+        return getattr(resolved.config, key)
+    return None
+
+
+def _resume_choice(
+    state: GlobalState, dataset: Path, output: Path, mode: str
+) -> pipeline.Step | None:
+    """The top-level R/C/S prompt. None means *start at the top*.
+
+    Fires only when a previous session left something behind. ``--yes`` picks
+    **R**, so the discard confirmation under **C** never arises unattended.
+    """
+    project_root = Path.cwd()
+    session = pipeline.inspect_session(
+        dataset=dataset, project_root=project_root, output=output, mode=mode
+    )
+    if not session.found:
+        return None
+    marks = olog.markers_for(olog.err_console)
+    olog.err_console.print("Previous session found:")
+    for status in session.steps:
+        if status.state is pipeline.StepState.NOT_STARTED:
+            continue
+        glyph = marks.ok if status.state is pipeline.StepState.COMPLETE else marks.fail
+        line = f"{session.name_of(status.step)} {status.state.value}"
+        if status.detail:
+            line += f" — {status.detail}"
+        olog.err_console.print(f"  {glyph} {line}")
+    resume = session.resume_from
+    choice = prompts.choose(
+        f"Resume from last completed step ({session.name_of(resume).lower()})?",
+        {"R": "Resume", "C": "Choose step", "S": "Start fresh"},
+        default="R",
+        assume_yes="R" if state.yes else None,
+        non_interactive_fix="Re-run with --yes to resume it.",
+    )
+    if choice == "R":
+        return resume
+    if choice == "S":
+        listing = input_manager.clear_staging()
+        if not listing.empty:
+            olog.status(f"Cleared {len(listing.lines)} staging entries.")
+        return pipeline.Step.FETCH
+    return _step_selector(session, dataset, output, project_root)
+
+
+_STEP_KEYS: Final[dict[str, pipeline.Step]] = {
+    "F": pipeline.Step.FETCH,
+    "C": pipeline.Step.REVIEW,
+    "T": pipeline.Step.TRAIN,
+    "E": pipeline.Step.EXPORT,
+}
+
+
+def _step_selector(
+    session: pipeline.SessionState,
+    dataset: Path,
+    output: Path,
+    project_root: Path,
+) -> pipeline.Step:
+    """**C** — the four steps with their status; an unusable one says why.
+
+    A step whose inputs are absent is **listed but not offered**, with its
+    reason. Choosing a step earlier than the last completed one discards the
+    later steps' staging, behind a confirmation; declining returns here rather
+    than ending the run, the same shape the mass-rejection prompt uses.
+    """
+    while True:
+        options: dict[str, str] = {}
+        for key, offered in _STEP_KEYS.items():
+            status = session.of(offered)
+            name = session.name_of(offered)
+            if status.selectable:
+                options[key] = f"{name} — {status.state.value}"
+            else:
+                olog.err_console.print(
+                    f"  {name} — {status.state.value}, not available: {status.blocked}"
+                )
+        choice = prompts.choose(
+            "Which step should the run start at?",
+            options,
+            default=next(iter(options)),
+            non_interactive_fix="Re-run with --yes to resume instead.",
+        )
+        step: pipeline.Step = _STEP_KEYS[choice]
+        later = [
+            session.of(after)
+            for after in pipeline.steps_after(step)
+            if session.of(after).state is not pipeline.StepState.NOT_STARTED
+        ]
+        if not later:
+            return step
+        # Asked before anything is removed: re-running an earlier step
+        # invalidates what followed it, and the removal is the user's to allow.
+        olog.err_console.print("Re-running this step invalidates what followed it:")
+        for status in later:
+            olog.err_console.print(
+                f"  {session.name_of(status.step)} — {status.detail}"
+            )
+        if not prompts.confirm(
+            "Remove them and start there? (n to choose again)",
+            default=False,
+            category=prompts.PromptCategory.DESTRUCTIVE,
+        ):
+            continue
+        for line in pipeline.discard_after(
+            step, dataset=dataset, project_root=project_root, output=output
+        ):
+            olog.status(f"  Removed {line}")
+        return step

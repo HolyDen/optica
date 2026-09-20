@@ -125,6 +125,7 @@ __all__ = [
     "export",
     "fetch",
     "label",
+    "report_training",
     "run",
     "train",
 ]
@@ -795,7 +796,7 @@ def _fetch_body(
     finally:
         client.close()
 
-    _report_fetch(collector, reports)
+    _report_fetch(collector, reports, final=scorer is None)
     if scorer is None:
         return FetchResult(
             classes=[cls.name for cls in plan],
@@ -805,6 +806,10 @@ def _fetch_body(
         )
     if clip_mode:
         counts = _clip_into_dataset(collector, plan, scorer, settings, dataset)
+        olog.success(
+            f"Fetch complete — {sum(counts.values())} images kept across "
+            f"{len(counts)} classes in {dataset}"
+        )
         return FetchResult(
             classes=[cls.name for cls in plan],
             counts=counts,
@@ -816,6 +821,9 @@ def _fetch_body(
     counts = {
         report.name: report.staged - removed.get(report.name, 0) for report in reports
     }
+    olog.success(
+        f"Fetch complete — {sum(counts.values())} images across {len(counts)} classes"
+    )
     return FetchResult(
         classes=[cls.name for cls in plan],
         counts=counts,
@@ -858,7 +866,10 @@ def _report_other_staged(collector: _Collector, names: Sequence[str]) -> None:
         )
 
 
-def _report_fetch(collector: _Collector, reports: Sequence[ClassFetchReport]) -> None:
+def _report_fetch(
+    collector: _Collector, reports: Sequence[ClassFetchReport], *, final: bool = True
+) -> None:
+    """The completion block. ``final=False`` where CLIP filtering follows."""
     for report in reports:
         olog.status(f"  {report.name}: {report.staged} images")
     resized = sum(report.resized for report in reports)
@@ -869,6 +880,9 @@ def _report_fetch(collector: _Collector, reports: Sequence[ClassFetchReport]) ->
             "upscaled.",
             count=resized,
         )
+    if final:
+        total = sum(report.staged for report in reports)
+        olog.success(f"Fetch complete — {total} images across {len(reports)} classes")
 
 
 def _clip_into_dataset(
@@ -1024,6 +1038,10 @@ def label(
             )
             _require_finished(outcome, Outcome, "Labeling")
             counts = _materialize_labels(collector, controller, destination, unreadable)
+            olog.success(
+                f"Labeling complete — {sum(counts.values())} images labeled across "
+                f"{len(counts)} classes"
+            )
     result = FetchResult(
         classes=sorted(counts),
         counts=counts,
@@ -1187,6 +1205,10 @@ def curate(
             counts = _materialize_selection(
                 collector, controller.view, session, destination
             )
+            olog.success(
+                f"Curation complete — {sum(counts.values())} images selected across "
+                f"{len(counts)} classes"
+            )
     result = FetchResult(
         classes=sorted(counts),
         counts=counts,
@@ -1345,6 +1367,7 @@ def _train(
             resume_from=resume,
         )
         outcome = run_training(plan)
+    report_training(outcome, project_root)
     return _train_result(outcome)
 
 
@@ -1362,6 +1385,47 @@ def _train_result(outcome: TrainOutcome) -> TrainResult:
         checkpoints=list(outcome.checkpoints),
         log_paths=list(outcome.log_paths),
     )
+
+
+def report_training(outcome: TrainOutcome, project_root: Path) -> None:
+    """``✓ Training complete — best val_accuracy 0.852`` and its detail lines.
+
+    The one renderer for this block, called by ``optica train`` and by this
+    module's own :func:`train`. It reads ``patience``,
+    ``phase1_stopped_early`` and ``classes_without_test``, which live on
+    ``TrainOutcome`` and deliberately **not** on `TrainResult` — which is why
+    the renderer lives beside the outcome rather than in the CLI, where
+    ``optica run`` could not reach those three fields at all.
+    """
+    best = outcome.best_val_accuracy
+    olog.success(
+        "Training complete — best val_accuracy "
+        + (f"{best:.3f}" if best is not None else "n/a")
+    )
+    epochs = f"  Epochs: {outcome.epochs_run} of {outcome.epochs_requested}"
+    if outcome.early_stopped:
+        epochs += f" (stopped early — val_loss, patience {outcome.patience})"
+    olog.status(epochs)
+    phase1, phase2 = outcome.phases
+    phases = f"  Phases: {phase1} head warmup + {phase2} fine-tune"
+    if outcome.phase1_stopped_early:
+        phases += f" (head warmup stopped early after {outcome.phases_run[0]})"
+    olog.status(phases)
+    n_classes = len(outcome.split_counts)
+    absent = len(outcome.classes_without_test)
+    if outcome.test_accuracy is None or absent == n_classes:
+        olog.status("  Test: not evaluated — no class received a test allocation")
+    else:
+        loss = outcome.test_loss if outcome.test_loss is not None else float("nan")
+        line = f"  Test: accuracy {outcome.test_accuracy:.3f}, loss {loss:.3f}"
+        if absent:
+            line += f" ({absent} class{'es' if absent != 1 else ''} absent from test set)"
+        olog.status(line)
+    olog.status(
+        f"  Checkpoints: {len(outcome.checkpoints)} saved in "
+        f"./{checkpoints.CHECKPOINTS_DIR}/"
+    )
+
 
 
 def _materialize_manifest(
@@ -1651,6 +1715,10 @@ def _export(
             moment=moment,
             project_root=project_root,
         )
+    olog.success(
+        f"Export complete — rank {chosen} of {len(ranked)} to {record.folder}"
+    )
+    olog.status(f"  Files: {', '.join(record.files)}")
     return ExportResult(
         export_folder=record.folder, files=list(record.files), checkpoint_rank=chosen
     )
@@ -1794,7 +1862,6 @@ def _run(
         configured=None,
         local_input=local is not input_manager.InputSource.FETCH,
     )
-    _require_extras(resolved_mode.mode, names)
     short_circuit = input_manager.short_circuits_acquisition(
         dataset=dataset,
         dataset_explicit=dataset_explicit,
@@ -1830,6 +1897,10 @@ def _run(
         short_circuit=short_circuit,
     )
     runs = set(steps_from(start))
+    # After the dry run, which does no work and so needs no stack: the entry
+    # check exists to fire before the user's attention and quota are spent, and
+    # a dry run spends neither.
+    _require_extras(resolved_mode.mode, names, runs)
 
     acquisition: FetchResult | None = None
     if Step.FETCH in runs and resolved_mode.mode == "label":
@@ -1919,17 +1990,21 @@ def _start_at(
     return state.resume_from if state.found else Step.FETCH
 
 
-def _require_extras(mode: str, names: Sequence[str]) -> None:
+def _require_extras(mode: str, names: Sequence[str], runs: set[Step]) -> None:
     """Every extra the resolved pipeline needs, checked at entry.
 
     Whether the pipeline can complete is fully determined at invocation, so a
     failure knowable at entry fires at entry — before the user's attention is
-    spent on the curation or labeling step.
+    spent on the curation or labeling step. A stage the resume point skips is
+    not part of this pipeline, so its extra is not required either.
     """
     from optica.server.app import load_web
 
-    if mode in ("label", "curate"):
+    if mode in ("label", "curate") and Step.REVIEW in runs:
         load_web()
-    if mode == "clip" or (mode == "curate" and any(is_blocklisted(n) for n in names)):
+    if Step.FETCH in runs and (
+        mode == "clip" or (mode == "curate" and any(is_blocklisted(n) for n in names))
+    ):
         input_manager.require_clip_extra()
-    import_torch_stack()
+    if Step.TRAIN in runs or Step.EXPORT in runs:
+        import_torch_stack()
