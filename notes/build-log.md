@@ -4502,3 +4502,79 @@ on Ubuntu is the only Linux check there is and it installs no torch stack;
 macOS has no check at all. `optica setup --ci` has never run **on a runner**,
 outside a venv — pass 6 adds it to the matrix, and that is the first time it
 will.
+
+### Amendment item 5 — which entry-time check wins: extras, or the blocklist definition
+**Pass:** 5   **Date:** 2026-09-20   **Where:** found by CI, on all three runners
+**The failure:** `optica.fetch(["defective","cat"])` raised `OpticaCLIPError`
+where the test expected `OpticaValidationError` at the definition step. It
+passes on this machine because `.venv` has `optica[clip]` and fails on every
+runner because none does.
+
+**The plan places both checks at entry and orders neither.**
+- **l.769** — *"**The user-definition prompt is the sequence's one
+  non-defaultable step**, so it fires wherever a prompt can fire and raises
+  `OpticaValidationError` where one cannot, naming the blocklisted class and
+  that a concrete definition is required — the same disposition the Python API
+  takes, and the reason an unattended run with a blocklisted `-c` name refuses
+  **before any fetch begins** rather than blocking on stdin."*
+- **l.1543** — *"**`optica fetch --mode curate` with a blocklisted `-c` name is
+  the one exception, and it takes the entry check.** … blocklist membership is
+  a test on the class names, which are invocation arguments, so this is knowable
+  at entry … and **the check fires at entry accordingly**."*
+- **l.226** — the standing rule both inherit: *"any check whose answer is
+  knowable before work begins … run before anything is written or any browser
+  opens."*
+
+Both are specified to fire at entry and nothing says which precedes the other.
+Two coherent readings follow:
+
+- **(A) the extras check first**, on l.1543's plain words — *the check fires at
+  entry accordingly*. This is what ships.
+- **(B) the definition raise first**, on l.1543's stated *reason*: the entry
+  check exists because *"the blocklist flow runs the user-definition prompt,
+  group-or-separate, the per-sub-term counts, the overlap check and the
+  confirmation, the fetch then completes in full, and only then does the grouped
+  path score images and raise."* In a **non-prompting** caller that sequence
+  cannot occur — the definition raises immediately, no fetch runs and no quota
+  is spent — so the work the entry check protects does not exist. Under (A) a
+  caller with no clip extra is told to install it for a call that would fail on
+  the definition regardless.
+
+**Not picked.** This is a plan question and the amendment session has four items
+already; this is the fifth. Note that **pass-5.md item 6 does not settle it
+either**: it says the API raises `OpticaValidationError` at the definition step,
+which is true under both readings whenever the extra is present, and says
+nothing about a caller who lacks it. The test had over-specified.
+
+**Is checkpoint 3's move related?** Not the same code — that moved
+`_require_extras` in `api/simple.py::_run`, after the dry-run return and scoped
+to the stages that actually run, and it left `_fetch`'s check untouched. But it
+is the same *kind* of question — *does the entry extras check fire for work that
+will not happen?* — and it was answered there in the direction of **(B)**: a dry
+run does no work, so it requires no stack, and a stage the resume point skips
+requires no extra. That precedent is recorded here because it bears on the
+amendment; it was not used to decide this one.
+
+**What ships meanwhile:** (A), unchanged. Two tests now pin both branches, each
+constructing the extra's presence in its own body, so whichever way the
+amendment goes the change is visible as a failing test rather than a silent
+drift.
+
+### The clip fixture recurred because it was module-local
+**Pass:** 5   **Date:** 2026-09-20   **Where:** `tests/conftest.py`
+Pass 4 met this exact pattern and fixed it with `clip_installed` — *"the clip
+extra is present — constructed, so CI (which never has it) agrees"* — defined at
+module level in `tests/unit/cli/test_fetch_command.py`. A module-level fixture
+is visible only to its own module, so `tests/unit/api/test_simple.py` could not
+see it; that file imports `World` and `_jpeg_for` from the same module **by
+name**, which is why the fixture looked available and was not.
+`clip_installed` and `clip_absent` now live in `tests/conftest.py` as the one
+definition, and the CLI module's local copy is gone.
+
+**Process, not code:** `.smoke/ci-venv` — Core plus `optica[test]`, no torch, no
+`fastapi`, no `open_clip`, editable-installed against the working tree — was
+built in pass 3 for exactly this and **pass 5 never ran it**. Run now, before
+the fix, it reproduced CI exactly: `1 failed, 2324 passed`. After: `2326 passed,
+26 skipped, 76 deselected`, with `ruff` and `mypy` clean under that interpreter
+too. Running the suite CI-style at each checkpoint is what caught this in passes
+2, 3 and 4; skipping it is what let a green checkpoint 5 hide a red CI.

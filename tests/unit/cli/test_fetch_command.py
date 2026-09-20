@@ -344,12 +344,6 @@ class FakeScorer:
 
 
 @pytest.fixture
-def clip_installed(monkeypatch):
-    """The clip extra is present — constructed, so CI (which never has it) agrees."""
-    monkeypatch.setattr("optica.input.manager.clip_available", lambda: True)
-
-
-@pytest.fixture
 def scorer(monkeypatch, clip_installed):
     fake = FakeScorer()
 

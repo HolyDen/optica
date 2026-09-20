@@ -29,6 +29,7 @@ from PIL import Image
 import optica
 from optica.api import simple
 from optica.exceptions import (
+    OpticaCLIPError,
     OpticaConfigError,
     OpticaValidationError,
     OpticaWarning,
@@ -222,20 +223,48 @@ class TestWarningContract:
 
 
 class TestBlocklistDefinition:
-    def test_fetch_raises_at_the_definition_step_naming_the_class(
-        self, fake_home, project_dir
+    """Plan § "Undefinable classes in auto modes" (l.769), through the API.
+
+    The user-definition prompt is the sequence's one non-defaultable step, so
+    where no prompt can fire it raises `OpticaValidationError` naming the class.
+
+    **Both branches construct the clip extra's presence in their own body.** The
+    build machine has it and no CI runner does, so a test that reads
+    ``clip_available()`` off the environment asserts a different thing on each —
+    which is exactly how this file failed CI on all three runners while passing
+    here.
+    """
+
+    def test_with_the_extra_present_it_raises_at_the_definition_step(
+        self, clip_installed, fake_home, project_dir
     ):
         with pytest.raises(OpticaValidationError) as info:
             optica.fetch(["defective", "cat"])
         assert "'defective' is too abstract to search for" in info.value.message
         assert "concrete definition is required" in info.value.message
 
+    def test_with_the_extra_absent_the_entry_check_fires_first(
+        self, clip_absent, fake_home, project_dir
+    ):
+        # The blocklist's grouped path runs CLIP filtering, and plan l.1543
+        # makes `fetch` with a blocklisted name the one single-step command that
+        # takes the entry extras check — so the missing extra is what the caller
+        # is told about, before the definition step is reached.
+        #
+        # Which of the two entry-time failures wins is **not settled by the
+        # plan**: l.769 and l.1543 both place their check at entry and neither
+        # orders them. Amendment item 5 in `notes/build-log.md` carries the
+        # question; this test pins what ships today so the answer cannot change
+        # silently.
+        with pytest.raises(OpticaCLIPError) as info:
+            optica.fetch(["defective", "cat"])
+        assert "requires the clip extra" in info.value.message
+
     def test_run_raises_the_same_way_before_anything_is_fetched(
-        self, fake_home, project_dir, monkeypatch
+        self, clip_installed, fake_home, project_dir, monkeypatch
     ):
         monkeypatch.setattr("optica.api.simple.import_torch_stack", lambda: None)
         monkeypatch.setattr("optica.server.app.load_web", lambda: None)
-        monkeypatch.setattr("optica.input.manager.clip_available", lambda: True)
         with pytest.raises(OpticaValidationError, match="too abstract"):
             optica.run(["defective", "cat"], mode="clip")
         assert not (project_dir / "dataset").exists()

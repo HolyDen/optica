@@ -48,6 +48,28 @@ def _reset_verbosity() -> Iterator[None]:
 
 
 @pytest.fixture
+def clip_installed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ``optica[clip]`` extra is present — constructed, never inherited.
+
+    Here rather than in one test module because the machine's answer differs
+    from CI's: the build ``.venv`` has the extra and no CI runner does, so a
+    test that reads ``clip_available()`` off the environment asserts a
+    different thing on each. Pass 4 met this and fixed it with a fixture local
+    to ``tests/unit/cli/test_fetch_command.py``; pass 5 met it again in
+    ``tests/unit/api/``, which could not see that fixture because a
+    module-level fixture is not shared. One definition, in ``conftest.py``, is
+    what stops it recurring a third time.
+    """
+    monkeypatch.setattr("optica.input.manager.clip_available", lambda: True)
+
+
+@pytest.fixture
+def clip_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ``optica[clip]`` extra is missing — the state every CI runner is in."""
+    monkeypatch.setattr("optica.input.manager.clip_available", lambda: False)
+
+
+@pytest.fixture
 def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point ``Path.home()`` at a temporary directory.
 
