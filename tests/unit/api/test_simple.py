@@ -534,3 +534,117 @@ class TestYesTable:
         assert YES_TABLE["export checkpoint selection"] == "rank 1 (best)"
         assert YES_TABLE["class-imbalance warning"].startswith("C —")
         assert YES_TABLE["optica run top-level R/C/S resume"] == "R — resume"
+
+
+class TestRunResumption:
+    """Plan § "`optica run` resumption and preconditions", through the API.
+
+    `optica.run()` behaves as though ``--yes`` were always passed, and that
+    table's own row is *`optica run` top-level R/C/S resume → R — resume*, so
+    the pipeline starts at the first step of a previous session that is not
+    complete. Stages skipped that way are ``None`` on the result.
+    """
+
+    @pytest.fixture
+    def stages(self, monkeypatch, fake_home, project_dir):
+        ran: list[str] = []
+
+        def record(name: str, result: Any):
+            def stage(*args: Any, **kwargs: Any) -> Any:
+                ran.append(name)
+                return result
+
+            return stage
+
+        monkeypatch.setattr("optica.api.simple.import_torch_stack", lambda: None)
+        monkeypatch.setattr("optica.server.app.load_web", lambda: None)
+        def fake_fetch(collector: Any, names: Any, **kwargs: Any) -> simple.FetchResult:
+            ran.append("fetch")
+            return simple.FetchResult()
+
+        monkeypatch.setattr(simple, "_fetch", fake_fetch)
+        monkeypatch.setattr(simple, "label", record("label", simple.FetchResult()))
+        monkeypatch.setattr(simple, "curate", record("curate", simple.FetchResult()))
+        monkeypatch.setattr(simple, "train", record("train", simple.TrainResult()))
+        monkeypatch.setattr(simple, "export", record("export", simple.ExportResult()))
+        return ran
+
+    def _dataset_and_checkpoint(self, project_dir: Path, *, interrupted: bool) -> None:
+        from optica.training import checkpoints as ckpt
+
+        _dataset(project_dir / "dataset", {"cat": 5, "dog": 5})
+        info = _info()
+        if interrupted:
+            info = _info(epoch=3, config={"epochs": 10}, interrupted=True)
+            del info["epochs_trained"]
+            del info["early_stopped"]
+        folder = project_dir / "checkpoints" / "checkpoint_val0.852_epoch3"
+        folder.mkdir(parents=True)
+        ckpt.write_info(folder, info)
+
+    def test_a_clean_project_runs_every_stage(self, stages, project_dir):
+        result = optica.run(["cat", "dog"], verbose=False)
+        assert stages == ["fetch", "curate", "train", "export"]
+        assert result.fetch is not None
+        assert result.train is not None
+        assert result.export is not None
+
+    def test_an_interrupted_training_run_resumes_at_training(
+        self, stages, project_dir
+    ):
+        self._dataset_and_checkpoint(project_dir, interrupted=True)
+        result = optica.run(["cat", "dog"], verbose=False)
+        assert stages == ["train", "export"]
+        # None for stages that did not run.
+        assert result.fetch is None
+        assert result.train is not None
+
+    def test_a_finished_training_run_resumes_at_export(self, stages, project_dir):
+        self._dataset_and_checkpoint(project_dir, interrupted=False)
+        result = optica.run(["cat", "dog"], verbose=False)
+        assert stages == ["export"]
+        assert (result.fetch, result.train) == (None, None)
+        assert result.export is not None
+
+    def test_a_dataset_alone_resumes_at_training(self, stages, project_dir):
+        # The review step is complete, so R skips acquisition — which a
+        # per-stage short-circuit would also do. The next test is where they
+        # part company.
+        _dataset(project_dir / "dataset", {"cat": 5, "dog": 5})
+        optica.run(["cat", "dog"], verbose=False)
+        assert stages == ["train", "export"]
+
+    def test_a_partially_complete_step_is_where_the_two_readings_part(
+        self, stages, fake_home, project_dir
+    ):
+        # An interrupted fetch: staging holds a `.partial` class. A two-state
+        # short-circuit sees "a dataset exists" and skips to training; the
+        # three-state model sees the fetch unfinished and resumes there.
+        staging = fake_home / ".optica" / "staging" / "dog.partial"
+        staging.mkdir(parents=True)
+        Image.new("RGB", (140, 140)).save(staging / "0001.jpg", "JPEG")
+        _dataset(project_dir / "dataset", {"cat": 5, "dog": 5})
+        optica.run(["cat", "dog"], verbose=False)
+        assert stages == ["fetch", "curate", "train", "export"]
+
+    def test_start_at_overrides_the_resume_point(self, stages, project_dir):
+        _dataset(project_dir / "dataset", {"cat": 5, "dog": 5})
+        optica.run(["cat", "dog"], start_at="fetch", verbose=False)
+        assert stages == ["fetch", "curate", "train", "export"]
+
+    def test_start_at_export_runs_that_stage_alone(self, stages, project_dir):
+        self._dataset_and_checkpoint(project_dir, interrupted=True)
+        optica.run(["cat", "dog"], start_at="export", verbose=False)
+        assert stages == ["export"]
+
+    def test_an_unknown_start_at_lists_the_four_steps(self, stages, project_dir):
+        with pytest.raises(OpticaValidationError) as info:
+            optica.run(["cat", "dog"], start_at="training", verbose=False)
+        assert info.value.options == ["fetch", "review", "train", "export"]
+
+    def test_dry_run_reports_where_it_would_start(self, stages, project_dir):
+        self._dataset_and_checkpoint(project_dir, interrupted=True)
+        result = optica.run(["cat", "dog"], dry_run=True, verbose=False)
+        assert result.plan is not None
+        assert result.plan["start_at"] == "train"
+        assert stages == []

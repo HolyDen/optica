@@ -4108,3 +4108,79 @@ the only layer that *can* render the full block on the `run` path.
   structure than the problem needs. `cli/` importing `api/` is the direction
   that already exists and creates no cycle.
 **Reversible?** Yes — one function's home, plus its call site.
+
+### Where the pipeline state model lives — `src/optica/pipeline.py`
+**Pass:** 5   **Date:** 2026-09-20   **Where:** new top-level module
+**Missing:** ambiguity 1 from the checkpoint 2 gate. The human resolved
+ambiguity 2 to the strong reading — `optica.run()` honours **R**, because l.1339
+makes the `--yes` table binding row by row "with no exceptions" and excepts only
+the `config --init` row, l.1335 puts the API under that table, and l.195's row
+is *R — resume*. That makes the state model **shared**, and the plan says
+nothing about where it lives.
+
+**Chosen:** a new top-level `src/optica/pipeline.py`, alongside `registries.py`.
+**Why:** it reads all four steps' state — auto-fetch staging and the session
+files, `dataset/`, `checkpoints/`, and the export container — so every existing
+package would own a quarter of it. It holds decisions and no prompts, which is
+what lets both surfaces consume it.
+
+**Rejected:**
+- **`input/manager.py`**, whose `short_circuits_acquisition` is the two-state
+  version of the same question. Rejected because the model needs
+  `training.checkpoints` and `export.manager`, and having the input layer import
+  the training and export layers inverts the direction § "Code Structure"
+  implies.
+- **`api/simple.py`**, which the CLI may already import (the completion-line
+  decision). Rejected because that module is a **surface**; a component both
+  surfaces consume does not belong inside one of them, and `simple.py` is
+  already the largest module in the package.
+- **`cli/classify.py`** — the placement the state model would have taken if
+  ambiguity 2 had gone the other way. Rejected by that resolution: the CLI layer
+  holds no decisions, and the API now consumes this one.
+
+**Two readings of "R resumes from the last incomplete step".** Implemented as
+*the first step that is not complete*. The two name the same step for any state
+the pipeline itself can produce, since a step cannot complete before the one in
+front of it; they part only where a user brings a later stage's output by hand,
+and there the earliest unfinished step is the one that must run for the rest to
+have inputs. Recorded in the property's own docstring.
+
+### `optica.run(start_at=…)` — public API surface added, deliberately
+**Pass:** 5   **Date:** 2026-09-20   **Where:** `api/simple.py::run`
+**Missing:** the terminal's **C** answer — *choose step* — has no way to reach
+the API. `optica.run()` resolves **R** itself from the state model, but C names
+a step, and a step that may be *complete* (the user asking to re-run training).
+
+**Assumed:** one keyword-only parameter, `start_at: str | None = None`, taking a
+`Step` value. None means R.
+**Why:** without it the CLI needs its own stage sequencer beside
+`optica.run()`'s — two implementations of the same order, which is the drift the
+*one source* discipline forbids.
+
+**Rejected:**
+- **Expressing C by discarding**, so the state model's own `resume_from` lands
+  on the chosen step. Works for every step except a **complete** one: after
+  discarding what follows it, it is still complete, so the resume point is the
+  step *after* it — the opposite of what the user asked for.
+- **Discarding the chosen step's own output too**, which would make it
+  not-started. Rejected as destruction the plan does not sanction: it says the
+  *later* steps' staging is discarded, and deleting a user's checkpoints because
+  they asked to train again is exactly what the K/A/D/S prompt exists to avoid.
+- **The CLI sequencing the Tier 4 functions itself for C** and calling
+  `optica.run()` for R — two code paths for one pipeline, free to diverge.
+
+**Flagged, not hidden:** this is public API surface added in the last pass that
+writes `src/`, and a parameter cannot be removed afterwards without breaking
+callers. It is one keyword-only parameter with a `None` default, so a caller who
+never passes it sees no change; the values are the four `Step` names, which the
+error lists on a wrong one.
+
+### An inconsistency inside the plan's own example block
+**Pass:** 5   **Date:** 2026-09-20   **Where:** plan l.744-752, observation only
+The prompt line in the example reads
+*"Resume from last completed step (training)?"* while the prose immediately
+below says *"R resumes from the **last incomplete** step"* — and in that same
+example training is the ✗ incomplete one. The parenthetical names the right
+step; the label in front of it does not. **The prose is normative and the code
+follows it**; the literal string is reproduced as the plan shows it, because
+output text is the plan's to fix. For the amendment list.

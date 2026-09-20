@@ -93,6 +93,7 @@ from optica.input.validation import (
     md5_of,
     reasons_summary,
 )
+from optica.pipeline import ORDER, Step, inspect_session, steps_from
 from optica.training import checkpoints
 from optica.training.engine import (
     finetune_ratio_warning,
@@ -1686,6 +1687,7 @@ def run(
     overwrite: bool = False,
     dry_run: bool = False,
     verbose: bool = True,
+    start_at: str | None = None,
     fetch_config: FetchConfig | None = None,
     train_config: TrainConfig | None = None,
     export_config: ExportConfig | None = None,
@@ -1698,10 +1700,40 @@ def run(
     and export steps need torch — so a missing extra cannot land after the
     curation attention has been spent.
 
+    **Resumption.** A previous session's state is read before anything runs,
+    and the pipeline starts at the first step that is not complete — the
+    ``--yes`` table's *R — resume*, which this layer takes because it behaves as
+    though ``--yes`` were always passed. Stages skipped that way are ``None`` on
+    the result. ``start_at`` overrides that: it names the step to begin at, and
+    exists because the terminal's **C** answer has no other way to reach here.
+
+    Args:
+        classes: The class names. A list, or one comma-separated string.
+        mode: ``label``, ``curate`` or ``clip``.
+        source: ``open-datasets`` or ``flickr``.
+        images_per_class: Images to collect per class.
+        clip_threshold: The CLIP confidence threshold, for ``mode="clip"``.
+        folder: A flat folder of images to label.
+        manifest: A CSV or JSON manifest to label or train from.
+        dataset: Where images land and training reads from. Passing it
+            explicitly is what an explicit ``--dataset`` means, and is what the
+            acquisition short-circuit tests.
+        model: The backbone family.
+        output: The container for the export folders and the project-local log.
+        checkpoint_rank: The checkpoint to export. Rank 1 by default.
+        overwrite: Required to replace a populated ``dataset/``.
+        dry_run: Resolve the plan and write nothing.
+        verbose: False suppresses Rich output.
+        start_at: ``"fetch"``, ``"review"``, ``"train"`` or ``"export"``.
+            None resumes.
+        fetch_config: Acquisition settings.
+        train_config: Training settings.
+        export_config: Export settings.
+
     Raises:
         OpticaMissingExtraError: An extra the resolved pipeline needs.
-        OpticaValidationError: A blocklisted class name, or a populated
-            ``dataset/`` without ``overwrite=True``.
+        OpticaValidationError: A blocklisted class name, an unknown
+            ``start_at``, or a populated ``dataset/`` without ``overwrite=True``.
     """
     collector = _Collector()
     with _verbosity(verbose):
@@ -1721,6 +1753,7 @@ def run(
             checkpoint_rank=checkpoint_rank,
             overwrite=overwrite,
             dry_run=dry_run,
+            start_at=start_at,
             fetch_config=fetch_config,
             train_config=train_config,
             export_config=export_config,
@@ -1746,6 +1779,7 @@ def _run(
     checkpoint_rank: int | None,
     overwrite: bool,
     dry_run: bool,
+    start_at: str | None,
     fetch_config: FetchConfig | None,
     train_config: TrainConfig | None,
     export_config: ExportConfig | None,
@@ -1761,6 +1795,13 @@ def _run(
         local_input=local is not input_manager.InputSource.FETCH,
     )
     _require_extras(resolved_mode.mode, names)
+    short_circuit = input_manager.short_circuits_acquisition(
+        dataset=dataset,
+        dataset_explicit=dataset_explicit,
+        folder=folder,
+        manifest=manifest,
+        explicit_mode=mode,
+    )
 
     if dry_run:
         return RunResult(
@@ -1768,20 +1809,30 @@ def _run(
             plan={
                 "mode": resolved_mode.mode,
                 "detection_order": resolved_mode.reason,
-                "short_circuit": input_manager.short_circuits_acquisition(
-                    dataset=dataset,
-                    dataset_explicit=dataset_explicit,
-                    folder=folder,
-                    manifest=manifest,
-                    explicit_mode=mode,
-                ),
+                "short_circuit": short_circuit,
                 "destination": str(output),
                 "classes": list(names),
+                "start_at": _start_at(
+                    start_at,
+                    dataset=dataset,
+                    output=output,
+                    mode=resolved_mode.mode,
+                    short_circuit=short_circuit,
+                ).value,
             },
         )
 
+    start = _start_at(
+        start_at,
+        dataset=dataset,
+        output=output,
+        mode=resolved_mode.mode,
+        short_circuit=short_circuit,
+    )
+    runs = set(steps_from(start))
+
     acquisition: FetchResult | None = None
-    if resolved_mode.mode == "label":
+    if Step.FETCH in runs and resolved_mode.mode == "label":
         acquisition = label(
             names,
             folder=folder,
@@ -1790,8 +1841,8 @@ def _run(
             overwrite=overwrite,
             config=fetch_config,
         )
-    else:
-        staged = _fetch(
+    elif Step.FETCH in runs:
+        acquisition = _fetch(
             collector,
             names,
             mode=resolved_mode.mode,
@@ -1803,27 +1854,69 @@ def _run(
             dry_run=False,
             config=fetch_config,
         )
-        acquisition = staged
-        if resolved_mode.mode == "curate":
-            acquisition = curate(
-                dataset=dataset, overwrite=overwrite, config=fetch_config
-            )
+    if Step.REVIEW in runs and resolved_mode.mode == "curate":
+        acquisition = curate(dataset=dataset, overwrite=overwrite, config=fetch_config)
+    elif Step.REVIEW in runs and resolved_mode.mode == "label" and acquisition is None:
+        # Resumed at the review step: labeling is the review step in this mode.
+        acquisition = label(
+            names,
+            folder=folder,
+            manifest=manifest,
+            dataset=dataset,
+            overwrite=overwrite,
+            config=fetch_config,
+        )
     if acquisition is not None:
         collector.extend(acquisition.warnings)
 
-    trained = train(
-        dataset=dataset,
-        model=model,
-        output=output,
-        overwrite=overwrite,
-        config=train_config,
-    )
-    collector.extend(trained.warnings)
-    exported = export(
-        checkpoint_rank=checkpoint_rank, output=output, config=export_config
-    )
-    collector.extend(exported.warnings)
+    trained: TrainResult | None = None
+    if Step.TRAIN in runs:
+        trained = train(
+            dataset=dataset,
+            model=model,
+            output=output,
+            overwrite=overwrite,
+            config=train_config,
+        )
+        collector.extend(trained.warnings)
+    exported: ExportResult | None = None
+    if Step.EXPORT in runs:
+        exported = export(
+            checkpoint_rank=checkpoint_rank, output=output, config=export_config
+        )
+        collector.extend(exported.warnings)
     return RunResult(fetch=acquisition, train=trained, export=exported)
+
+
+def _start_at(
+    requested: str | None,
+    *,
+    dataset: Path,
+    output: Path,
+    mode: str,
+    short_circuit: bool,
+) -> Step:
+    """Where the pipeline begins: the caller's step, or **R**'s.
+
+    With no ``start_at`` this is *R — resume*: the first step of a previous
+    session that is not complete. With nothing left behind it is the top, and an
+    explicit ``dataset=`` that short-circuits acquisition begins at training,
+    which is the resolution that rule already had.
+    """
+    if requested is not None:
+        try:
+            return Step(requested)
+        except ValueError as exc:
+            raise OpticaValidationError(
+                f"start_at={requested!r} is not a pipeline step.",
+                options=[step.value for step in ORDER],
+            ) from exc
+    if short_circuit:
+        return Step.TRAIN
+    state = inspect_session(
+        dataset=dataset, project_root=Path.cwd(), output=output, mode=mode
+    )
+    return state.resume_from if state.found else Step.FETCH
 
 
 def _require_extras(mode: str, names: Sequence[str]) -> None:

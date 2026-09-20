@@ -43,10 +43,12 @@ __all__ = [
     "clean_stale_partials",
     "component_count",
     "export_checkpoint",
+    "export_folders",
     "folder_name",
     "missing_run_end",
     "model_info",
     "parse_ranks",
+    "partial_exports",
     "ranked_checkpoints",
     "require_writable",
     "stale_checkpoint_paths",
@@ -259,6 +261,36 @@ def unique_name(container: Path, name: str) -> str:
         candidate = f"{name}_{counter}"
         counter += 1
     return candidate
+
+
+def export_folders(container: Path) -> list[Path]:
+    """Every export folder in ``container``, name-sorted.
+
+    Recognised by the naming rule alone — ``<model>_<n>cls_<date>_<time>``
+    with its optional ``_ckptX`` and ``_x`` suffixes — so a folder the user
+    put there is not mistaken for one Optica wrote.
+    """
+    if not container.is_dir():
+        return []
+    return sorted(
+        entry
+        for entry in container.iterdir()
+        if entry.is_dir() and _EXPORT_NAME.match(entry.name)
+    )
+
+
+def partial_exports(container: Path) -> list[Path]:
+    """``.<export-folder>.partial/`` folders an interrupted export left."""
+    if not container.is_dir():
+        return []
+    return sorted(
+        entry
+        for entry in container.iterdir()
+        if entry.is_dir()
+        and entry.name.startswith(".")
+        and entry.name.endswith(".partial")
+        and _EXPORT_NAME.match(entry.name[1 : -len(".partial")])
+    )
 
 
 def clean_stale_partials(container: Path) -> list[Path]:
