@@ -4032,3 +4032,79 @@ ran:
 - The four-step status model is verified against constructed states only, so a
   state real usage can produce but the fixtures do not construct is unverified.
 Same discipline as pass 4's MPS path and pass 3's prompt surface.
+
+### `optica.export` — the alias is stable, on one undocumented invariant
+**Pass:** 5   **Date:** 2026-09-20   **Where:** `tests/unit/api/test_init.py::TestExportNameCollision`
+**Tested, not reasoned.** Five import orders in **fresh interpreters**, plus the
+in-process state:
+
+| Probe | `optica.export` is |
+|---|---|
+| `import optica.export` alone | function |
+| `import optica` then `import optica.export` | function |
+| `import optica` then `import optica.export.pytorch` | function |
+| `import optica.export.pytorch` then `import optica` | function |
+| `from optica import export` | function |
+| `sys.modules["optica.export"].manager` | the real module's `manager` |
+
+**Why it holds, and what it rests on.** The import machinery sets the attribute
+on the parent package **only on a submodule's first load**
+(`_find_and_load_unlocked`); every later import short-circuits on `sys.modules`
+and never re-binds. Optica's first load of `optica.export` happens *inside*
+`optica/__init__.py` — through `optica.api.simple`'s module-level
+`from optica.export import manager` — **before** the alias is bound. So the
+alias is bound last and nothing overwrites it.
+
+**Demonstrated both ways** on a two-shape synthetic package: where the
+subpackage is **not** pre-imported by `__init__`, a later `import pkg.sub` in
+user code rebinds the attribute from the function to the module; where it **is**
+pre-imported, the function survives. Optica is the second shape.
+
+**The invariant is fragile and was undocumented.** Making
+`api/simple.py`'s export import lazy — an ordinary refactor — flips Optica to
+the first shape: the mutation was applied and **four of the five import orders
+broke**, `import optica.export` alone included. The invariant now has a test of
+its own (`test_the_subpackage_is_loaded_before_the_alias_is_bound`) and the five
+orders are parametrized, so the next person to make that import lazy is told
+why they cannot.
+
+**For the amendment list.** The collision is a **plan contradiction**, not an
+implementation choice: § "Python API" fixes `optica.export()` as a Tier 3 alias
+and § "Code Structure" fixes `src/optica/export/`, and only one attribute can
+exist on the package object. The code currently arbitrates it. The plan should
+say which wins — and, if the function, that the subpackage must be imported
+during package init for the alias to survive.
+
+### The per-stage completion lines in `optica run` — the API prints them
+**Pass:** 5   **Date:** 2026-09-20   **Where:** decided at the checkpoint 2 gate
+**Missing:** the plan says the `✓ X complete` / `✗ X incomplete` lines are
+printed for the browser steps "the moment a browser step hands control back"
+(l.955) and for training "for standalone `optica train` and inside `optica run`
+alike" (l.1089). It does not say **which layer prints them** once `optica run`
+reaches its stages through `optica.run()`.
+
+**Chosen:** the **API's stage functions print them**, through `olog`'s existing
+`success`/`incomplete` vocabulary, and the CLI's `run` prints none of its own.
+The training block's renderer moves into `api/simple.py`, and
+`cli/classify.py`'s standalone `train` calls it — **one implementation, both
+surfaces**.
+**Why:** the block reports `patience`, `phase1_stopped_early` and
+`classes_without_test`, which live on `TrainOutcome` and **not** on
+`TrainResult`. Only the API layer holds both the outcome and `olog`, so it is
+the only layer that *can* render the full block on the `run` path.
+
+**Rejected:**
+- **The CLI re-rendering from `RunResult`** — impossible without adding
+  `patience`, `phase1_stopped_early` and `classes_without_test` to
+  `TrainResult`, and pass-5.md item 2 forbids adding the
+  "(N classes absent from test set)" field outright.
+- **Leaving both renderers in place** (CLI's `_report_training` and a new one in
+  the API) — two implementations of the same sentences, which is exactly the
+  drift the warning contract's *one source, two surfaces* rule exists to
+  prevent.
+- **A new shared renderer module, or moving the renderer into `training/`** —
+  `training/` deliberately imports no `olog` (outside `cli/` and `api/`, only
+  `server/app.py` does), and a module § "Code Structure" does not have is more
+  structure than the problem needs. `cli/` importing `api/` is the direction
+  that already exists and creates no cycle.
+**Reversible?** Yes — one function's home, plus its call site.
