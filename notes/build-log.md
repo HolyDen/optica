@@ -4910,3 +4910,109 @@ absence guard, Ruff, mypy, `optica setup --ci`, `pytest -m "not slow"`,
 and `.smoke/web-venv`. All green. What that cannot cover: Linux and macOS
 themselves, Python 3.12 and 3.13 (everything local is 3.11.9), and the runner
 images.
+
+### Plan l.289's folder-level `.gitignore` is not implemented — finding
+**Pass:** 6, checkpoint 2   **Date:** 2026-09-21   **Where:** `src/optica/` — absent
+**Found by:** verifying a README sentence before writing it.
+
+**The plan requires it.** l.289: *"**Gitignored:** `./checkpoints/` and
+`./optica-output/` … When Optica first creates either folder, **it drops a
+`.gitignore` containing `*` inside that folder**. Optica never touches the
+user's project-level or global `.gitignore`."* Two clauses; only the second one
+ships.
+
+**Observed:**
+- `grep -rni gitignore src/ tests/ --include=*.py` returns **two docstring
+  mentions** in `config/manager.py` and **no code**. No test covers it.
+- Four folders created by the pass 4 live runs contain no `.gitignore`:
+  `.smoke/pass4-live/milestone/optica-output/`,
+  `…/milestone/checkpoints/`, `…/train-smoke/optica-output/`,
+  `…/train-smoke/checkpoints/`.
+
+**How it was missed.** The fast-follow reconciliation's line
+(`notes/build-log.md`, F2) reads *"Advise users to add `.env` to their own
+`.gitignore`. Optica never touches it (l.261, l.289)"* — it cites l.289 for its
+second clause and does not register the first. The pass 6 opening message
+inherited the same reading: *"Optica cannot, it writes folder-level `.gitignore`
+files only."* Neither is wrong about `.env`; both assume a behaviour that was
+never built. Four passes could have implemented it and none was told to.
+
+**Not fixed.** Pass 6 writes no `src/`, and checkpoint 0 already spent this
+pass's one deliberate exception. This is a missing feature rather than a wrong
+plan, so the plan needs no amendment — the code needs the two lines, in
+`export/manager.py` and wherever `checkpoints/` is first created, plus a test
+that a fresh run leaves a `.gitignore` containing `*` in each. **Fast-follow.**
+
+**What the README says instead.** The drafted sentence — *"it only ever writes a
+`.gitignore` inside folders it creates itself"* — would have been false in the
+one artifact every user reads. It now states the shipped truth, that Optica
+never creates or edits any `.gitignore`, and gives the three lines to add:
+`.env`, `checkpoints/`, `optica-output/`. That is more useful to a user than the
+specified behaviour would have been, and it stays correct whether or not the
+fast-follow lands.
+
+### Checkpoint 2 — the README
+**Pass:** 6   **Date:** 2026-09-21   **Where:** `README.md`
+
+**Rewritten, not edited.** The file that was in the repo predated
+implementation and described a package that does not exist: extras
+`optica[onnx]` and `optica[server]` (the real ones are `web` and `clip`), a
+`--format` flag and ONNX/REST export (both left V1), `--count` (it is
+`--images-per-class`), and the space-separated `--classes "cat" "dog"` form
+(V1 is comma-separated). Nothing in it could be salvaged by editing.
+
+**Every checkable claim was checked against the package, not against the plan.**
+A script parses the README and asserts against the installed `optica`:
+
+| Checked | Result |
+|---|---|
+| The 20 config keys named | all exist in `config/defaults.py` |
+| The 10 defaults quoted | all match (`epochs` 10, `batch_size` 32, `clip_threshold` 0.25, …) |
+| The 33-flag table | 33 rows; every flag and alias exists; no flag invented; none omitted but `--checkpoint`, documented in `--checkpoint-rank`'s row as its alias |
+| Each flag's *applies-to* column | matches the Typer command tree, flag by flag |
+| The public names used in examples | all present, including `optica.classify.*` |
+| The 7 `Classifier` properties | all real properties |
+| `Status` values | `empty, data_ready, trained, exported` |
+| Result attributes in examples | `RunResult.train/.export`, `TrainResult.best_val_accuracy`, `ExportResult.export_folder` |
+| Config-object fields in examples | all real dataclass fields |
+| Exit-code table | matches `ExitCode` exactly |
+
+Two claims were corrected by it. The export folder holds **`model.pt`,
+`class_names.json`, `model_info.json`, `usage_examples.md`** — the draft said "a
+generated README", and the real filename is `usage_examples.md`; confirmed
+against four real export folders from the pass 4 live run. And the Tier 5
+checkpoint example named an invented path; `checkpoint_path` names a checkpoint
+*folder*, so it now shows the real shape,
+`./checkpoints/checkpoint_val0.983_epoch7`.
+
+**The `~/.optica/logs/` claim is from a real run,** not from the plan: the pass 4
+milestone wrote `run_20260915_141628_mobilenet_3classes.json` to both
+`<output>/logs/` and `home3/.optica/logs/` — same filename, two locations.
+
+**What the README deliberately does not say**, per the pass 6 brief and
+`notes/build-log.md` § "The standing list":
+- It does not describe any interactive flow as exercised. The Status section
+  says the opposite, in the open: prompts are driven by tests, not typed at a
+  terminal, and it names the other paths with no live exercise — Flickr, MPS,
+  setup's first install and its CPU-only branch, and resumption after a genuine
+  interruption.
+- It does not call resume lossless. The *Start fresh* limitation from l.1020 is
+  stated in full under Known limitations.
+- It does not mention `optica.run(start_at=…)`. Amendment session 4 declined it.
+- It does not present l.769's definition error as what an unattended caller
+  sees. Known limitations carries l.1543's accepted order instead: the missing
+  extra is reported first, CLI and API alike.
+- Windows is *"supported and covered by CI; not a primary target"* — never
+  untested.
+
+**The CI badge is present and commented,** with a line saying why: a badge is a
+claim, and it is uncommented after a human pushes and sees green.
+
+**What the README says about CI coverage.** The matrix is four legs, so the
+claim is made precisely: each of Python 3.11, 3.12 and 3.13 is tested on at
+least one OS, and the minimum declared dependency versions are tested on one
+leg. It states explicitly that this is *not* every Python version on every
+platform, because a reader assumes a cross product otherwise.
+
+**The bracket limitation** from checkpoint 0 is two sentences under Known
+limitations, next to the others: display-only, disk always correct.
