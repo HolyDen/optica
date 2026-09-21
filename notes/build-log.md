@@ -4606,3 +4606,82 @@ that was a missing scope line rather than a wrong claim. Caught by pass 5's
 opening message, which replaced the gap rule's *log and keep building* with
 *say so loudly*, on the grounds that pass 6 writes no `src/` and there is no
 later pass to inherit a log entry.
+
+### Plan amendment session 4 — items 19–23 decided
+**Pass:** between 5 and 6   **Date:** 2026-09-21   **Where:** `spec/optica-plan-v1-core.md`
+**What this is:** the outcome of the fourth out-of-repo plan-amendment session,
+on pass 5's five items. It is recorded here because pass 6 reads this log in
+full and writes the README from the plan. The `spec/` edits were applied by the
+user, not by an agent. Full reasoning is in
+`optica-plan-amendment-change-record-2026-09-21.md`.
+
+| # | Item | Disposition | Sites |
+|---|---|---|---|
+| 19 | `optica.export` — the flat alias collides with the `export/` subpackage | **Ratified** — the function wins; the init-order invariant is stated. Renaming the subpackage goes to the fast-follow | l.1417 |
+| 20 | `optica.run()` honours R, established only across four passages | **Amended** — one clause | l.1339 |
+| 21 | `optica.run(start_at=…)` — public surface the plan does not specify | **Declined** — the plan does not specify it; the fast-follow makes it private | — |
+| 22 | The resume prompt says *last completed step* | **Deferred** — the string and l.748 change together in the fast-follow | — |
+| 23 | The entry extras check runs before the blocklist definition's raise | **Amended** — accepted limitation; the reorder goes to the fast-follow | l.1543 |
+
+**For pass 6 — what the README must not say.**
+- **Do not document `optica.run(start_at=…)`.** The plan declined it. Its
+  docstring already shows it in `help()`; that stays, because it is `src/`.
+- **Do not say that an unattended run with a blocklisted `-c` name always
+  reports the definition error.** Without the clip extra it reports the missing
+  extra first — on `fetch` and `run`, CLI and API alike. l.1543 now records this
+  as an accepted limitation.
+- **If the README quotes `optica run`'s resume prompt, quote it as V1 prints
+  it.** l.748 is unchanged, and so is `cli/classify.py`'s string.
+- **Spell out every extras install command in full** — `optica[clip]`,
+  `optica[web]` — and do not copy the CLI's missing-extra messages as they print.
+  See the finding below.
+
+**Item 19 — the invariant, as the plan now states it.** `optica.export` is the
+flat alias, not the subpackage, whatever the caller imports afterwards, and the
+subpackage is imported during package initialization, before the alias is bound.
+Today that happens through `api/simple.py:48`'s module-level
+`from optica.export import manager as export_manager`, before `__init__.py:54`
+binds `export = _task.export`. The plan states the requirement, not which module
+meets it. `test_the_subpackage_is_loaded_before_the_alias_is_bound`
+(`tests/unit/api/test_init.py:73`) is what enforces it. The rebinding was
+reproduced this session on a synthetic package under Python 3.12.3: four of five
+import orders leave the module when the subpackage is not loaded during init,
+and all five leave the function when it is.
+
+**Item 21 — what V1 ships anyway.** `start_at: str | None = None`,
+keyword-only. Its values are `fetch`, `review`, `train` and `export`, and any
+other value raises `OpticaValidationError`. `discard_after` is called only from
+`cli/classify.py:2557`, so the API itself never discards anything. The decline
+is about the surface, not safety. The dry-run `plan` also carries a `start_at`
+key (`api/simple.py:1882`), a fifth key beyond the four resolutions l.1380
+lists. It goes to the fast-follow with the parameter.
+
+**Item 23 — observed, not inferred.** Probes were run in `.smoke/ci-venv` with no
+clip, torch or fastapi, stdin `NUL`, and a private home.
+`optica.fetch(["defective","cat"])` and `optica fetch -c defective,cat --yes`
+raise `OpticaCLIPError`. `optica.run(...)` and `optica run ... --yes` raise
+`OpticaWebError`, which is the first missing extra. That clip belongs to the
+same check on `run` is `_require_extras` as logged in pass 5; it has not been
+observed on its own.
+
+### The CLI's missing-extra messages drop the extra's name — finding
+**Pass:** between 5 and 6   **Date:** 2026-09-21   **Where:** CLI error output;
+found by amendment session 4's item 23 probes
+**Observed:** `optica fetch` prints
+`✕ CLIP filtering requires the clip extra. Run: optica setup --include-extras clip or pip install optica`,
+and `optica run` prints `…Run: optica setup or pip install optica`. Plan
+l.1536–1537 specify `optica[clip]` and `optica[web]`. `str(e)` on the same
+exceptions keeps the brackets, so the text is lost when it is rendered.
+**Why:** Rich markup reads a bracketed token that starts with a lowercase letter
+as a style tag and drops it without an error. This was reproduced with Rich
+15.0.0: `[clip]`, `[web]` and `[y/N — n to exit]` vanish; `[R]`, `[C]` and `[F]`
+survive, since uppercase tags are not markup; an escaped `\[clip]` survives.
+**Consequence:** the `optica setup …` half of each message is correct. The `pip`
+half tells the user to install a package they already have.
+**Not fixed.** Pass 6 writes no `src/`. Whether V1 ships with this is the
+human's decision; otherwise it is fast-follow.
+**Scope not yet known — the first two observations:**
+- `findstr /n /c:"escape" /c:"markup" src\optica\utils\logging.py`, which shows
+  whether `olog` escapes anything.
+- `findstr /s /n /c:"n to exit" src\*.py`, which shows which path prints the
+  overwrite prompt's options.
