@@ -4773,3 +4773,51 @@ human: it is a fast-follow candidate, and fixing it would have meant rewriting
 sixty call sites under a "nothing else under `src/`" instruction.
 
 **Gates.** Ruff clean, mypy clean (119 files), in both environments.
+
+### Fast-follow backlog — unescaped caller text at the direct `console.print` sites
+**Pass:** 6, checkpoint 0   **Date:** 2026-09-21   **Where:** `src/optica/cli/`
+**Status:** found during checkpoint 0's sweep, deliberately not fixed. For
+`optica-fast-follow-findings.md`, which lives outside the repo.
+
+**Mechanism.** The same one checkpoint 0 fixed: Rich reads a bracketed token
+whose first character is lowercase as a style tag and drops it with no error and
+no warning. `[R]`, `[C]`, `[F]` are unaffected — uppercase tags are not markup —
+which is why the whole class stayed invisible through five passes.
+
+**Sites: 56 direct `olog.*_console.print` calls that bypass the `olog` helpers.**
+
+| File | Sites |
+|---|---|
+| `cli/classify.py` | 31 |
+| `cli/setup.py` | 11 |
+| `cli/main.py` | 9 |
+| `cli/config.py` | 5 |
+
+Each formats its own string and prints straight to `out_console`/`err_console`,
+so none of them passes through the escaping that `status`, `detail`, `success`,
+`incomplete`, `warn` and `render_error` have had since checkpoint 0. Where such
+a call interpolates caller-controlled text — a class name, a dataset or output
+path, `exc.format_message()`, `type(exc).__name__: {exc}` — a bracketed token in
+that text is silently dropped from the line.
+
+**No specified string is affected.** Checkpoint 0's AST sweep over every literal
+and f-string in `src/` found no remaining static message text that Rich eats;
+the two that existed were the plan's missing-extra messages and are fixed. This
+item is the same mechanism reaching **user data** instead.
+
+**The fix is already built.** The helpers escape correctly. So this is routing
+the 56 sites through them, or calling `escape()` at each — not new machinery.
+Routing is the better shape where the site's only markup is a status glyph,
+since the helper owns the glyph too; the handful that construct a genuinely
+different line escape in place.
+
+**Display-only. Disk contents are always correct.** The escape checkpoint 0
+added is a render-time transformation and nothing else reads it: class names
+reach folder names, the manifest and the config through their own paths, none of
+which touches Rich. A user whose class name contains brackets gets a folder and
+a manifest row with the name intact and a terminal line missing part of it. The
+severity is a confusing screen, never a wrong file.
+
+**Also carried to the README** at checkpoint 2, stated next to the other V1
+limitations: class names and paths containing square brackets may display
+incompletely in terminal output, while the files on disk are unaffected.
