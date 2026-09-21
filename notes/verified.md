@@ -1800,3 +1800,52 @@ all three environments, and `optica --version` printed `optica 0.1.1` in each.
 **Consequence:** the step is safe to put on every matrix leg. It had never run
 outside a developer venv before this; it does not read or write anything outside
 `$HOME/.optica/`, so a runner's home is all it needs.
+
+### The Python classifiers, against the CI matrix and against PyPI's trove list
+**Date:** 2026-09-21
+**How:** a script parsing `pyproject.toml` and `.github/workflows/ci.yml`
+together; `importlib.metadata.metadata("optica")` for the metadata as built; and
+`https://pypi.org/classifiers/` for the trove list.
+**Result:**
+
+| Classifier | Legs that run it |
+|---|---|
+| `Programming Language :: Python :: 3.11` | `linux-min-py311` (ubuntu-24.04) |
+| `Programming Language :: Python :: 3.12` | `macos-max-py312` (macos-latest) |
+| `Programming Language :: Python :: 3.13` | `linux-max-py313-web` (ubuntu-24.04); `windows-max-py313` (windows-latest) |
+
+Both directions hold: **no classifier lacks a leg, and no leg runs a Python that
+is not classified.** The declared floor, `requires-python = ">=3.11"`, is the
+version `linux-min-py311` runs — and it runs it against the dependency floors
+too. All three strings are present in PyPI's official trove list, checked today.
+As built, `importlib.metadata` reports exactly these three and
+`Requires-Python: >=3.11`.
+**Consequence:** `pass-6.md`'s *"confirm the version classifiers landed in
+`pyproject.toml` in pass 0"* is discharged. No edit was needed or made.
+
+### `requires-python` has no ceiling, so 3.14 installs untested
+**Date:** 2026-09-21
+**How:** the same parse; `Programming Language :: Python :: 3.14` confirmed to
+be a valid trove classifier on `https://pypi.org/classifiers/`.
+**Result:** `requires-python = ">=3.11"` is open-ended. Python 3.14 exists, is a
+recognised classifier, and pip will therefore install Optica on it — where
+nothing is classified and no CI leg runs.
+**Consequence:** **observed, not changed.** Plan § "Tech Stack" l.119 sets the
+target at *"3.11–3.13"* and says *"Python 3.14 is supported by most packages but
+is still early — not the recommended V1 target"*, but it specifies no upper
+bound on `requires-python`, and pass 6's scope is to confirm the classifiers
+rather than to author packaging policy. Adding `,<3.14` would hard-block 3.14
+users, which is a release decision. Flagged for the human.
+
+### `dist/` holds pre-pass-0 artifacts that do not match current metadata
+**Date:** 2026-09-21
+**How:** read `PKG-INFO` out of `dist/optica-0.1.1.tar.gz` with `tarfile`.
+**Result:** the sdist on disk declares `Requires-Python: >=3.10` and carries
+**no `Classifier:` lines at all**. The current tree declares `>=3.11` and three
+classifiers. `dist/` also still holds the 0.1.0 pair.
+**Consequence:** the files in `dist/` predate pass 0's `pyproject.toml` edits and
+are not what this build would produce. Nothing in the repo depends on them.
+**Ship-time note for the human:** clear `dist/` before building 0.2.0 —
+otherwise `twine upload dist/*` would try to re-upload 0.1.0 and 0.1.1. Those
+uploads fail as duplicates, which is the safety net `CLAUDE.md` describes
+working as intended, but it is a confusing way to discover a stale directory.

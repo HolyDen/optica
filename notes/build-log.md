@@ -5116,3 +5116,54 @@ which is checked against the live Typer tree rather than against prose.
 
 **Gates.** Ruff clean, mypy clean (121 files). `.venv` 2413 passed / 12 skipped
 / 76 deselected; `.smoke/ci-venv` 2351 passed / 26 skipped / 76 deselected.
+
+### Checkpoint 3 — CHANGELOG, and the classifiers confirmed
+**Pass:** 6   **Date:** 2026-09-21   **Where:** `CHANGELOG.md` (new), `pyproject.toml` (read only)
+
+**`CHANGELOG.md` did not exist.** `pass-6.md` lists it as a pass 6 deliverable
+and no earlier pass created it, so this is its first commit rather than an edit.
+
+**The entry is `pass-6.md`'s exact string,** asserted rather than eyeballed:
+`## [0.2.0] — Initial release.` is present as a whole line, it is the only `##`
+heading in the file, and it carries no digits after the `]` — i.e. **no release
+date.** The date is not known, and a wrong date in a changelog outlives the
+mistake.
+
+**Not a second copy of the README.** The file carries a three-line format note
+and one pointer to the README's *Known limitations in V1* section. The anchor
+`#known-limitations-in-v1` was derived from the actual heading text and checked,
+not guessed. Both external links —
+`keepachangelog.com/en/1.1.0/` and `semver.org/spec/v2.0.0.html` — were fetched
+before being written into a shipped file.
+
+**The version mismatch is deliberate and was left alone.** `pyproject.toml` says
+`version = "0.1.1"`; the changelog entry says `[0.2.0]`. `0.1.1` is a published
+placeholder held there so an accidental build-and-upload fails as a duplicate
+rather than burning `0.2.0`, and a human bumps it at ship time. `CLAUDE.md`
+§ "Hard don'ts" forbids the change. No reconciliation attempted.
+
+**The classifiers were confirmed against the matrix, in both directions.**
+Every classifier has a leg, and every leg's Python is classified:
+
+| Classifier | Leg |
+|---|---|
+| 3.11 | `linux-min-py311` (ubuntu-24.04) — also the dependency floors |
+| 3.12 | `macos-max-py312` (macos-latest) |
+| 3.13 | `linux-max-py313-web` (ubuntu-24.04); `windows-max-py313` (windows-latest) |
+
+All three are valid PyPI trove strings (checked against `pypi.org/classifiers/`
+today), and `importlib.metadata` confirms all three survive into the metadata as
+built, with `Requires-Python: >=3.11`. **No edit was needed.** Pass 0 authored
+them under its step 5; the two-pass overlap logged at pass 0 resolved as
+planned, with pass 6 verifying rather than authoring.
+
+**Two things observed while confirming, neither changed** — both in
+`notes/verified.md` in full:
+- **`requires-python = ">=3.11"` has no ceiling.** Python 3.14 exists and is a
+  recognised classifier, so pip will install Optica there, where no leg runs.
+  The plan sets the target at 3.11–3.13 but specifies no upper bound, and adding
+  one would hard-block 3.14 users — a release decision, not a pass 6 one.
+- **`dist/` is stale.** `dist/optica-0.1.1.tar.gz` declares
+  `Requires-Python: >=3.10` and carries no classifiers at all; it predates pass
+  0's edits. Ship-time note: clear `dist/` before building 0.2.0, or
+  `twine upload dist/*` will try to re-upload 0.1.0 and 0.1.1.
