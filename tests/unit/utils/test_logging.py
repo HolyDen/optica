@@ -10,7 +10,7 @@ import io
 
 import pytest
 
-from optica.exceptions import OpticaError
+from optica.exceptions import OpticaCLIPError, OpticaError, OpticaWebError
 from optica.utils import logging as olog
 
 
@@ -227,3 +227,104 @@ class TestIncomplete:
         olog.set_verbosity(olog.Verbosity.QUIET)
         olog.incomplete("Labeling incomplete — timed out")
         assert "Labeling incomplete — timed out" in capsys.readouterr().err
+
+
+class TestBracketedTextSurvivesRendering:
+    """A bracketed token in caller text reaches the screen intact.
+
+    Covers plan § "Lazy imports" — the per-dependency message table at
+    l.1536-1537, which spells the install commands ``pip install optica[web]``
+    and ``pip install optica[clip]``.
+
+    Rich reads ``[web]`` as a style tag and drops it, with no error and no
+    warning, so the rendered line read ``pip install optica`` — a command that
+    installs the package the user already has. ``str(exc)`` was correct
+    throughout; only the rendering lost the extra, which is why every assertion
+    here is made against captured output rather than against a message string.
+
+    Uppercase tags are not markup, so ``[R]``/``[C]``/``[F]`` were never
+    affected and the defect was invisible on the prompts that use them.
+    """
+
+    @pytest.mark.parametrize(
+        ("exc", "extra"),
+        [
+            (OpticaWebError(), "pip install optica[web]"),
+            (OpticaCLIPError(), "pip install optica[clip]"),
+        ],
+        ids=["web", "clip"],
+    )
+    def test_the_missing_extra_messages_keep_the_extra(self, exc, extra, capsys):
+        olog.render_error(exc)
+        assert extra in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        ("exc", "extra"),
+        [
+            (OpticaWebError(), "optica[web]"),
+            (OpticaCLIPError(), "optica[clip]"),
+        ],
+        ids=["web", "clip"],
+    )
+    def test_the_message_itself_was_never_wrong(self, exc, extra):
+        # The escape belongs at render time. An escape written into the literal
+        # would fix the screen and corrupt `str(exc)`, which the Python API
+        # surfaces to a caller who never goes near Rich.
+        assert extra in str(exc)
+        assert "\\" not in str(exc)
+
+    def test_every_renderer_carries_a_bracketed_token(self, capsys):
+        olog.set_verbosity(olog.Verbosity.VERBOSE)
+        olog.status("status optica[web]")
+        olog.detail("detail optica[web]")
+        olog.success("success optica[web]")
+        captured = capsys.readouterr()
+        for line in ("status optica[web]", "detail optica[web]", "success optica[web]"):
+            assert line in captured.out
+
+        olog.incomplete("incomplete optica[clip]")
+        olog.warn("warn optica[clip]", why="why optica[clip]", fix="fix optica[clip]")
+        err = capsys.readouterr().err
+        for line in (
+            "incomplete optica[clip]",
+            "warn optica[clip]",
+            "why optica[clip]",
+            "fix optica[clip]",
+        ):
+            assert line in err
+
+    def test_every_render_error_field_carries_one(self, capsys):
+        olog.render_error(
+            OpticaError(
+                "message optica[web]",
+                why="why optica[web]",
+                fix=["fix optica[web]"],
+                options=["mode[a]", "mode[b]"],
+                default="default[x]",
+            )
+        )
+        err = capsys.readouterr().err
+        for line in (
+            "message optica[web]",
+            "why optica[web]",
+            "fix optica[web]",
+            "mode[a], mode[b]",
+            "default[x]",
+        ):
+            assert line in err
+
+    def test_the_escape_is_not_printed(self, capsys):
+        # The mechanism is a backslash Rich consumes. If it ever reaches the
+        # screen the user gets ``optica\[web]``, which is as uncopyable as the
+        # truncation it replaced.
+        olog.render_error(OpticaWebError())
+        assert r"\[web]" not in capsys.readouterr().err
+
+    def test_the_style_tags_are_still_markup(self, capsys):
+        # The fix escapes caller text only. Escaping the whole formatted line
+        # would make every status glyph print its tag literally.
+        olog.success("done")
+        out = capsys.readouterr().out
+        assert "[bold green]" not in out
+        assert olog.markers_for(olog.out_console).ok in out
+

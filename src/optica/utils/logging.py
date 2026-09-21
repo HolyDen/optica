@@ -2,13 +2,21 @@
 
 Implements plan § "Coding Style" → *Logging* and *Error handling*.
 
-Two rules from the plan shape this module:
+Three rules shape this module — the first two from the plan, the third from
+what Rich does to text it is handed:
 
 - ``--verbose``/``--quiet`` **govern progress and status output only**. Warnings,
   safety prompts and errors display at every level (Implementation Note 19), so
   :func:`warn` and :func:`render_error` never consult the verbosity level.
 - Output reports actual detected values, never internal registry keys. That is a
   rule for callers; this module only gives them somewhere to write.
+- **Caller text is plain text, never Rich markup**, and is escaped on the way to
+  a console. Rich reads a bracketed token that begins with a lowercase letter as
+  a style tag and drops it *without an error*, so an unescaped
+  ``pip install optica[web]`` renders as ``pip install optica`` — an instruction
+  that installs the wrong thing, silently. The style tags around the status
+  glyphs are written in this module, outside the escaped text, and are the only
+  markup Optica emits.
 
 Prompts deliberately live in :mod:`optica.utils.prompts` rather than here: the
 verbosity switch must never reach them.
@@ -22,6 +30,7 @@ from enum import IntEnum
 from typing import TYPE_CHECKING, Final, TextIO
 
 from rich.console import Console
+from rich.markup import escape
 
 if TYPE_CHECKING:
     from optica.exceptions import OpticaError
@@ -138,20 +147,20 @@ def markers_for(console: Console) -> Markers:
 def status(message: str) -> None:
     """Print a progress or status line. Suppressed by ``--quiet``."""
     if _verbosity >= Verbosity.NORMAL:
-        out_console.print(message)
+        out_console.print(escape(message))
 
 
 def detail(message: str) -> None:
     """Print an extra-detail line. Shown only under ``--verbose``."""
     if _verbosity >= Verbosity.VERBOSE:
-        out_console.print(message)
+        out_console.print(escape(message))
 
 
 def success(message: str) -> None:
     """Print a completion line. Suppressed by ``--quiet``."""
     if _verbosity >= Verbosity.NORMAL:
         marks = markers_for(out_console)
-        out_console.print(f"[bold green]{marks.ok}[/bold green] {message}")
+        out_console.print(f"[bold green]{marks.ok}[/bold green] {escape(message)}")
 
 
 def incomplete(message: str) -> None:
@@ -161,7 +170,7 @@ def incomplete(message: str) -> None:
     the line is the only record an unattended run has of why.
     """
     marks = markers_for(err_console)
-    err_console.print(f"[bold red]{marks.fail}[/bold red] {message}")
+    err_console.print(f"[bold red]{marks.fail}[/bold red] {escape(message)}")
 
 
 def warn(message: str, *, why: str | None = None, fix: str | None = None) -> None:
@@ -172,10 +181,10 @@ def warn(message: str, *, why: str | None = None, fix: str | None = None) -> Non
     warnings.
     """
     marks = markers_for(err_console)
-    err_console.print(f"[bold yellow]{marks.warn}[/bold yellow] {message}")
+    err_console.print(f"[bold yellow]{marks.warn}[/bold yellow] {escape(message)}")
     for line in (why, fix):
         if line:
-            err_console.print(f"  {line}")
+            err_console.print(f"  {escape(line)}")
 
 
 def render_error(exc: OpticaError) -> None:
@@ -188,15 +197,15 @@ def render_error(exc: OpticaError) -> None:
     Always goes to stderr, and never consults the verbosity level.
     """
     marks = markers_for(err_console)
-    err_console.print(f"[bold red]{marks.error}[/bold red] {exc.message}")
+    err_console.print(f"[bold red]{marks.error}[/bold red] {escape(exc.message)}")
     if exc.why:
-        err_console.print(f"  {exc.why}")
+        err_console.print(f"  {escape(exc.why)}")
     for line in exc.fix:
-        err_console.print(f"  {line}")
+        err_console.print(f"  {escape(line)}")
     if exc.options:
-        err_console.print(f"  Valid options: {', '.join(exc.options)}")
+        err_console.print(f"  Valid options: {escape(', '.join(exc.options))}")
     if exc.default is not None:
-        err_console.print(f"  Default: {exc.default}")
+        err_console.print(f"  Default: {escape(str(exc.default))}")
 
 
 _NON_RAISING: Final = frozenset(

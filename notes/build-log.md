@@ -4685,3 +4685,91 @@ human's decision; otherwise it is fast-follow.
   whether `olog` escapes anything.
 - `findstr /s /n /c:"n to exit" src\*.py`, which shows which path prints the
   overwrite prompt's options.
+
+## Pass 6 — packaging and documentation
+
+### Checkpoint 0 — the Rich markup fix, scoped and applied
+**Pass:** 6   **Date:** 2026-09-21   **Where:** `src/optica/utils/logging.py`,
+`tests/unit/utils/test_logging.py`
+**Why this is `src/` in a no-`src/` pass:** assigned deliberately in the pass 6
+opening message, the way pass 4 and pass 5 each received one.
+
+**Scope, measured before the fix.** The two `findstr` probes the amendment
+session 4 entry left behind were run first.
+
+- `findstr /n /c:"escape" /c:"markup" src\optica\utils\logging.py` → **no
+  matches**. `olog` escaped nothing; every helper interpolated caller text
+  straight into a Rich markup string.
+- `findstr /s /n /c:"n to exit" src\*.py` → `cli/classify.py:928`, a single
+  site, and it spells the options `(n to exit)` in parentheses. Nothing bracketed.
+
+Neither probe bounds the defect on its own, so the sweep was widened to the
+whole of `src/`: an AST walk over every string literal **and** every f-string
+(placeholders standing in for the expressions), rendering each through
+`rich.text.Text.from_markup` and reporting any bracketed token that did not
+survive. That is the sweep-for-what-should-no-longer-be-there rule — the
+question asked was *which strings does Rich eat*, not *which strings did I mean
+to change*.
+
+**Eleven sites matched. Two are the defect:**
+
+| Site | Token | Verdict |
+|---|---|---|
+| `exceptions.py:145` `OpticaWebError` | `[web]` | **Defect** — plan l.1536 |
+| `exceptions.py:159` `OpticaCLIPError` | `[clip]` | **Defect** — plan l.1537 |
+| `registries.py:141,152` `pip_extra` | `[web]`, `[clip]` | Not printed — a subprocess argv element (`cli/setup.py:578`) |
+| `registries.py:435,438,441` `_PIP_NAME_HINTS` | `[web]`, `[clip]`, `[all]` | Not printed — dict keys, looked up only |
+| `cli/setup.py:299` `choose("[auto/cpu/gpu]", …)` | `[auto/cpu/gpu]` | Not Rich — `prompts.choose` goes through `typer.prompt`, i.e. Click's echo |
+| `export/pytorch.py:136` | `[index]` | Not printed — generated README text, written to a file |
+| `input/classes.py:124` | `[a-z]` | Not printed — a regex |
+
+The remaining matches were deliberate style tags (`[bold red]`, `[dim]`,
+`[progress.description]`). **Two message strings is a handful**, so the fix
+proceeded rather than stopping.
+
+**Where the fix went, and why not in the literal.** The plan's text was never
+wrong and `str(exc)` carried `optica[web]` correctly throughout; only the
+*rendering* lost it. Writing `optica\[web]` into the message literal would have
+fixed the screen and corrupted `str(exc)`, which the Python API hands to a
+caller who never goes near Rich. So `logging.py` now escapes caller-supplied
+text at the point it reaches a console — `status`, `detail`, `success`,
+`incomplete`, `warn` (message, why, fix) and `render_error` (message, why, fix,
+options, default). The style tags stay outside the escaped text. `escape()` is a
+no-op on text with no brackets, including Windows paths, which was checked
+before applying it.
+
+No caller passes deliberate markup through an `olog` helper — verified; the
+markup in `cli/` is written at direct `console.print` sites, which construct
+their own tags — so escaping inside the helpers breaks nothing.
+
+**Verified through the real CLI**, in `.smoke/ci-venv` (Core + `optica[test]`,
+no clip, fastapi or torch), stdin from `/dev/null`, private home:
+
+- `optica fetch -c cat,dog --mode clip --yes` → `… or pip install optica[clip]`
+- `optica run -c cat,dog --yes` → `… or pip install optica[web]`
+
+Both now match plan l.1536–1537 exactly.
+
+**Proved by mutation**, four ways, because four of the eight new tests are
+guards that must pass in both directions:
+
+| Mutant | Fails |
+|---|---|
+| A — `escape` replaced by identity (the pre-fix behaviour) | the 4 survival tests |
+| B — escape the whole formatted line, tags included | `test_the_style_tags_are_still_markup` |
+| C — double-escape the message | the 3 that assert the backslash never reaches the screen |
+| D — the rejected fix: escape written into the `exceptions.py` literal | `test_the_message_itself_was_never_wrong`, and 2 more |
+
+Every one of the eight is killed by at least one mutant.
+
+**Found, not fixed — deliberately out of scope.** Around sixty direct
+`olog.*_console.print` sites under `cli/` bypass the helpers and interpolate
+dynamic text — class names, paths, `exc.format_message()` — into a markup
+string without escaping. No *specified* string is affected (the AST sweep found
+none), so this is not the plan-conformance defect that was assigned; it is the
+same mechanism reaching **user data**. A user whose class name or output path
+contains a lowercase bracketed token would see it silently dropped. Left for the
+human: it is a fast-follow candidate, and fixing it would have meant rewriting
+sixty call sites under a "nothing else under `src/`" instruction.
+
+**Gates.** Ruff clean, mypy clean (119 files), in both environments.
