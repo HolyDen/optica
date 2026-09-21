@@ -133,7 +133,7 @@ from optica.training.trainer import (
 )
 from optica.training.trainer import train as run_training
 from optica.utils import logging as olog
-from optica.utils import prompts
+from optica.utils import prompts, workspace
 from optica.utils.lockfile import acquire_lock
 from optica.utils.mlstack import import_torch_stack, select_device
 from optica.utils.progress import progress_bar
@@ -1474,7 +1474,7 @@ def _ensure_output(state: GlobalState, output: Path) -> None:
         assume_yes=state.yes,
         non_interactive_fix="Re-run with --yes to create it.",
     )
-    output.mkdir(parents=True, exist_ok=True)
+    workspace.create_ignored(output)
 
 
 _KADS_PENDING = Callable[[], None]
@@ -2029,7 +2029,7 @@ def _resolve_export_output(state: GlobalState, raw: str) -> tuple[Path, str | No
             assume_yes=state.yes,
             non_interactive_fix="Re-run with --yes to create it.",
         )
-        path.mkdir(parents=True, exist_ok=True)
+        workspace.create_ignored(path)
     elif situation is export_manager.OutputSituation.NAME_OR_CONTAINER:
         as_container = raw.rstrip("/" + chr(92)) + "/"
         if state.yes or not prompts.is_interactive():
@@ -2057,10 +2057,10 @@ def _resolve_export_output(state: GlobalState, raw: str) -> tuple[Path, str | No
         if choice == "A":
             raise typer.Exit(code=ExitCode.ABORTED)
         if choice == "N":
-            path.parent.mkdir(parents=True, exist_ok=True)
+            workspace.create_ignored(path.parent)
             export_manager.require_writable(path.parent)
             return path.parent, path.name
-        path.mkdir(parents=True, exist_ok=True)
+        workspace.create_ignored(path)
     export_manager.require_writable(path)
     return path, None
 

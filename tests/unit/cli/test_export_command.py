@@ -181,12 +181,26 @@ class TestRankValidation:
         assert "optica train" in capsys.readouterr().err
 
 
+def _export_folders(container: Path) -> list[Path]:
+    """Everything in an `--output` container except the `.gitignore` it carries.
+
+    Plan l.289 puts a `.gitignore` containing `*` inside every container Optica
+    creates, so "the container holds one export" is a statement about the
+    folders in it, not about its entry count.
+    """
+    return sorted(p for p in container.iterdir() if p.name != ".gitignore")
+
+
+def _exports_in(container: Path) -> int:
+    return len(_export_folders(container))
+
+
 class TestOutput:
     def test_an_absent_single_component_is_created_under_yes(
         self, writer, three, project_dir
     ):
         assert app.invoke_guarded(["export", "--yes", "-o", "models"]) == ExitCode.SUCCESS
-        assert len(list((project_dir / "models").iterdir())) == 1
+        assert _exports_in(project_dir / "models") == 1
 
     def test_the_default_output_gets_the_same_handling(
         self, writer, three, project_dir, capsys
@@ -218,7 +232,7 @@ class TestOutput:
     ):
         code = app.invoke_guarded(["export", "--yes", "--output", "runs/pets/"])
         assert code == ExitCode.SUCCESS
-        assert len(list((project_dir / "runs" / "pets").iterdir())) == 1
+        assert _exports_in(project_dir / "runs" / "pets") == 1
 
     def test_n_uses_the_last_component_as_the_export_name(
         self, writer, three, project_dir, interactive, monkeypatch
@@ -227,7 +241,12 @@ class TestOutput:
             "typer.prompt", lambda text, **k: "N" if "does not exist" in text else "1"
         )
         assert app.invoke_guarded(["export", "--output", "runs/pets"]) == ExitCode.SUCCESS
-        assert sorted(p.name for p in (project_dir / "runs").iterdir()) == ["pets"]
+        # `runs/` is the container, so it carries the ignore file; `pets` is
+        # the export name inside it. Plan l.289.
+        assert sorted(p.name for p in (project_dir / "runs").iterdir()) == [
+            ".gitignore",
+            "pets",
+        ]
         info = json.loads((project_dir / "runs" / "pets" / "model_info.json").read_text())
         assert info["export_folder"] == "pets"
 
@@ -238,7 +257,7 @@ class TestOutput:
             "typer.prompt", lambda text, **k: "C" if "does not exist" in text else "1"
         )
         assert app.invoke_guarded(["export", "--output", "runs/pets"]) == ExitCode.SUCCESS
-        [inner] = list((project_dir / "runs" / "pets").iterdir())
+        [inner] = _export_folders(project_dir / "runs" / "pets")
         assert inner.name.startswith("efficientnet-small_3cls_")
 
     def test_a_aborts_with_exit_3_and_creates_nothing(

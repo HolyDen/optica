@@ -355,20 +355,22 @@ Keys: `default_mode`, `default_source`, `default_model`, `images_per_class`,
 it is a Flickr credential rather than an Optica setting. Open Images needs no
 key. `optica config --view` masks it.
 
-> **Add `.env` to your `.gitignore` yourself.** Optica never creates or edits a
-> `.gitignore` — not your project's, and not one inside the folders it writes.
-> `.env` is where keys live, so it is the one file that most needs to stay out
-> of a commit. It is the opposite of `.optica.toml`, which is meant to be
-> committed. Worth adding at the same time:
->
-> ```gitignore
-> .env
-> checkpoints/
-> optica-output/
-> ```
->
-> `checkpoints/` and `optica-output/` are large and regenerable, and a run's
-> training log is kept in `~/.optica/logs/` regardless.
+**What Optica gitignores, and what it leaves to you.** When Optica *creates*
+`checkpoints/` or your `--output` container, it drops a `.gitignore` containing
+`*` inside that folder, so large regenerable files never reach a commit by
+accident. (A run's training log is kept in `~/.optica/logs/` regardless, so
+ignoring the output folder loses no history.) It does this only for folders it
+creates itself: a folder that already exists is left exactly as it is, including
+any `.gitignore` you put there, and Optica never reads or edits your
+project-level or global `.gitignore`. `dataset/` is deliberately not ignored —
+it is your curated data, and you may well want it committed.
+
+> **Add `.env` to your `.gitignore` yourself.** Nothing above covers a file at
+> your project root, so this one is on you. `.env` is where keys live, which
+> makes it the file that most needs to stay out of a commit — the opposite of
+> `.optica.toml`, which is meant to be committed. If you created `checkpoints/`
+> or an output folder by hand before Optica did, add those too; Optica will not
+> retrofit an ignore file into a folder it did not create.
 
 **Run history.** Every training run writes a JSON log to two places: a project
 copy under `<output>/logs/`, which follows `--output` and disappears with the

@@ -103,6 +103,7 @@ from optica.training.splits import training_data_hash
 from optica.training.trainer import TrainOutcome, TrainPlan, TrainSettings
 from optica.training.trainer import train as run_training
 from optica.utils import logging as olog
+from optica.utils import workspace
 from optica.utils.lockfile import acquire_lock
 from optica.utils.mlstack import import_torch_stack, select_device
 
@@ -1470,7 +1471,7 @@ def _ensure_output(output: Path) -> None:
             why="output is the container for run outputs.",
             fix="Choose a folder path: optica.train(output='./optica-output')",
         )
-    output.mkdir(parents=True, exist_ok=True)
+    workspace.create_ignored(output)
 
 
 def _checkpoint_soft_limit(
@@ -1732,7 +1733,7 @@ def _ensure_container(output: Path) -> Path:
             why="output is the container every export folder is written into.",
             fix="Choose a folder path: optica.export(output='./optica-output')",
         )
-    output.mkdir(parents=True, exist_ok=True)
+    workspace.create_ignored(output)
     return output
 
 

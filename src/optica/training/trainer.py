@@ -42,6 +42,7 @@ from optica.training.models import (
 from optica.training.runlog import RunLog, log_filename, run_id_for, tilde_path
 from optica.training.splits import DatasetSplit, stratified_split, training_data_hash
 from optica.training.transforms import build_transforms
+from optica.utils import workspace
 from optica.utils.mlstack import import_torch_stack, select_device
 
 if TYPE_CHECKING:
@@ -370,6 +371,12 @@ def train(
         candidate_rank = _qualifies(retained, metrics, settings.max_checkpoints)
         if candidate_rank:
             test = engine.evaluate(test_loader)
+            # `checkpoints/` comes into existence here — this is the first write
+            # into it — so this is where plan l.289's `.gitignore` is dropped.
+            # `unique_folder` scans the root, and `save_weights` would create it
+            # implicitly through `parents=True`, so without this the folder would
+            # appear with no ignore file in it.
+            workspace.create_ignored(plan.checkpoints_root)
             folder = ckpt.unique_folder(
                 plan.checkpoints_root,
                 ckpt.folder_name(metrics.val_accuracy, metrics.epoch),

@@ -35,6 +35,7 @@ from optica.exceptions import (
     OpticaWarning,
 )
 from optica.training.trainer import TrainOutcome
+from optica.utils import workspace
 from tests.unit.cli.test_fetch_command import World, _jpeg_for  # noqa: F401
 from tests.unit.export.test_manager import _info
 
@@ -677,3 +678,32 @@ class TestRunResumption:
         assert result.plan is not None
         assert result.plan["start_at"] == "train"
         assert stages == []
+
+
+class TestOutputContainersAreGitignored:
+    """Plan § "Project layout" l.289, through the API's two container helpers.
+
+    The helper is unit-tested in ``tests/unit/utils/test_workspace.py``; these
+    assert it is actually wired into the paths that create ``optica-output/``,
+    which is the half a helper test cannot reach.
+    """
+
+    def test_train_creates_the_container_with_a_gitignore(self, tmp_path):
+        output = tmp_path / "optica-output"
+        simple._ensure_output(output)
+        ignore = output / ".gitignore"
+        assert ignore.read_text(encoding="utf-8") == workspace.GITIGNORE_BODY
+
+    def test_export_creates_the_container_with_a_gitignore(self, tmp_path):
+        output = tmp_path / "optica-output"
+        assert simple._ensure_container(output) == output
+        ignore = output / ".gitignore"
+        assert ignore.read_text(encoding="utf-8") == workspace.GITIGNORE_BODY
+
+    def test_an_existing_container_is_not_given_one(self, tmp_path):
+        output = tmp_path / "optica-output"
+        output.mkdir()
+        simple._ensure_output(output)
+        simple._ensure_container(output)
+        assert not (output / ".gitignore").exists()
+

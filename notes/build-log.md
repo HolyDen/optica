@@ -5016,3 +5016,103 @@ platform, because a reader assumes a cross product otherwise.
 
 **The bracket limitation** from checkpoint 0 is two sentences under Known
 limitations, next to the others: display-only, disk always correct.
+
+### Checkpoint 2b — l.289's folder-level `.gitignore`, implemented
+**Pass:** 6   **Date:** 2026-09-21   **Where:** `src/optica/utils/workspace.py` (new),
+`api/simple.py`, `cli/classify.py`, `training/trainer.py`
+**Why this is `src/` in a no-`src/` pass:** assigned deliberately, as checkpoint
+0 was. *"Checkpoint 0 already spent the exception"* was a reading, not a rule —
+each exception is assigned per item.
+
+**Sized first. Seven creation sites, in four modules.**
+
+| Folder | Site | How it was created before |
+|---|---|---|
+| `--output` container | `api/simple.py:1474` (`_ensure_output`, train) | `output.mkdir(parents=True, exist_ok=True)` |
+| | `api/simple.py:1736` (`_ensure_container`, export) | same |
+| | `cli/classify.py:1477` (`_ensure_output`, train) | same |
+| | `cli/classify.py:2032` (export, CREATE) | same |
+| | `cli/classify.py:2060` (export, **N** — container is `path.parent`) | same |
+| | `cli/classify.py:2063` (export, **C**) | same |
+| `checkpoints/` | `training/trainer.py:379` | **never created explicitly** — it appeared as a `parents=True` side effect of `save_weights` |
+
+The seventh is the one a `grep` for `mkdir` does not show as a defect: nothing
+created `checkpoints/`, so there was no line to change — a call had to be added
+at the moment of first write. Seven sites is a handful, so the work proceeded.
+
+**`dataset/` was not touched.** `input/manager.py:349` and the rest of the input
+layer are unchanged. The plan gitignores exactly two folders and `dataset/` is
+the user's curated data. `TestTheContract::test_dataset_is_not_gitignored_by_any_call_site`
+pins this by scanning the call sites, so extending the helper to `dataset/`
+fails a test rather than quietly ignoring data someone meant to commit.
+
+**The case l.289 does not settle, and the reading taken.** l.289's trigger is
+*"when Optica **first creates** either folder"*. It says nothing about a folder
+that already exists without a `.gitignore` — which is every `checkpoints/` and
+output folder created by a build before this one.
+
+**Reading taken: creation, and only creation.** `create_ignored` writes only
+when its own `mkdir` succeeded; an existing folder gets nothing. Three reasons,
+all from the text:
+1. The trigger is literally creation.
+2. l.289's second clause — *"Optica never touches the user's project-level or
+   global `.gitignore`"* — sets a conservative posture toward ignore files that
+   the loose reading would break, since Optica would be adding a file to a
+   directory the user made.
+3. It makes *never overwrite a user's `.gitignore`* structural rather than a
+   special case: the only directory written into is one that did not exist a
+   moment earlier, so there is nothing in it to overwrite.
+
+**The gap this leaves, stated rather than hidden:** a folder created before this
+shipped never gains a `.gitignore`. The README covers it — it tells users to add
+such folders themselves and says Optica will not retrofit one.
+
+**Other detail l.289 leaves open:** the file's exact bytes. It says *containing
+`*`*; `GITIGNORE_BODY` is `"*\n"`, the trailing newline being text-file
+convention. Git reads the two identically, and the test asserts
+`GITIGNORE_BODY.strip() == "*"` so the specified content is what is pinned.
+
+**Tested, and proved by mutation.** 13 tests in
+`tests/unit/utils/test_workspace.py`, each constructing its folder state in its
+own body, plus 3 wiring tests in `tests/unit/api/test_simple.py`. Four mutants:
+
+| Mutant | Fails |
+|---|---|
+| A — never write the file (the pre-fix behaviour) | 4 |
+| B — write it even when the folder already existed | 5 |
+| C — write it beside the folder instead of inside | 5 |
+| D — unwire the API call site, helper left intact | 2 |
+
+D is the one that matters for the wiring: it leaves `create_ignored` perfect and
+still fails, so those three tests are testing the call site rather than the
+helper.
+
+**Four existing tests changed, and why they had to.**
+`tests/unit/cli/test_export_command.py::TestOutput` asserted *"the container
+holds exactly one entry"* in four places. That assumption is now wrong by
+design. They assert the same property through `_export_folders()`, which
+excludes the ignore file, and one of them now asserts the full listing
+`[".gitignore", "pets"]` outright. The count they were protecting — one export
+per container — is unchanged.
+
+**Verified against a real run, not against the source.** A real
+`optica train` + `optica export` in `.smoke/cp2b/proj/`:
+- `checkpoints/.gitignore` and `optica-output/.gitignore` both contain `*`.
+- No `.gitignore` at the project root. None in `dataset/`.
+- `git check-ignore -v` names the rules:
+  `checkpoints/.gitignore:1:*` ignores `checkpoints/…/checkpoint.pt`, and
+  `optica-output/.gitignore:1:*` ignores `optica-output/logs`. `git add -A`
+  staged the whole `dataset/` and nothing under either ignored folder.
+- Exporting into `mine/`, a folder created by hand holding
+  `.gitignore` = `!keep.txt`, left that file byte-identical and still wrote the
+  export into it.
+
+**The README verification script was extended to do this itself.**
+`verify_gitignore_claim.py` drives the installed `optica` binary in a throwaway
+project, runs train and two exports, reads what is on disk, runs
+`git check-ignore`, and then asserts the README paragraph says what the run
+showed — 16 checks, all green. It is the same discipline as the flag table,
+which is checked against the live Typer tree rather than against prose.
+
+**Gates.** Ruff clean, mypy clean (121 files). `.venv` 2413 passed / 12 skipped
+/ 76 deselected; `.smoke/ci-venv` 2351 passed / 26 skipped / 76 deselected.
