@@ -1,0 +1,25 @@
+# The declared floor of every package a CI leg installs — Core plus `optica[test]`.
+#
+# Plan § "Tech Stack" → *Keeping current* requires the matrix to test the
+# minimum **and** maximum declared versions of what each leg installs, because
+# testing only the latest can never catch use of an API that is absent from the
+# lower bound. The `max` legs install whatever resolves today; the `min` leg
+# installs this file.
+#
+# Each pin is the lowest release that satisfies the corresponding `>=` bound in
+# `pyproject.toml` — verified against PyPI on 2026-09-21, see
+# `notes/verified.md` § "Every declared lower bound is a real release".
+# A bound moved in `pyproject.toml` must be moved here in the same commit.
+
+# Core
+typer==0.27.0
+rich==15.0.0
+python-dotenv==1.2.0
+pydantic-settings==2.15.0
+httpx==0.28.0
+pillow==12.3.0
+
+# optica[test] — the non-user-facing toolchain
+pytest==9.1.0
+ruff==0.16.0
+mypy==2.3.0

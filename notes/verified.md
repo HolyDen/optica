@@ -1694,3 +1694,109 @@ to resolve.
 **Consequence:** fixed; the state stores `already installed` and `_review` adds
 `marks.ok`. Re-run live: `already installed +`. A glyph with a good ASCII
 stand-in must go through `Markers`, not into a constant.
+
+## Pass 6
+
+### `ubuntu-latest` moves to Ubuntu 26.04 — the window, and that it is gradual
+**Date:** 2026-09-21
+**How:** fetched `https://github.com/actions/runner-images/issues/14748` and
+`https://raw.githubusercontent.com/actions/runner-images/main/README.md`
+**Result:** the issue is titled *"[Ubuntu] `ubuntu-latest` label will use Ubuntu
+26.04 in November 2026"* and is **open**. The rollout *"will be rolled out over
+a period of several weeks beginning October 19, 2026"*, completing *"by November
+19, 2026"*. The README's current label table:
+
+| Label | Today |
+|---|---|
+| `ubuntu-latest` | Ubuntu 24.04 |
+| `ubuntu-24.04` | Ubuntu 24.04 |
+| `ubuntu-26.04` | Ubuntu 26.04 |
+| `macos-latest` | macOS 26, arm64 |
+| `windows-latest` | Windows Server 2025 |
+
+The README's own guidance: *"To avoid unintended OS version changes during the
+`-latest` label migration period, specify a specific OS version in the yaml
+file."*
+**Consequence:** the pass 6 brief gave the date as *"migrates to Ubuntu 26 from
+19 October 2026"*. The start date is right; the migration **completes a month
+later, on 19 November**, and is **gradual** in between — which is the fact that
+decides the question. For that month `ubuntu-latest` is nondeterministic: two
+runs of the same commit can land on different operating systems. `ci.yml`
+therefore pins **`ubuntu-24.04`**. Reasoning in `notes/build-log.md`.
+
+### Every declared lower bound is a real release
+**Date:** 2026-09-21
+**How:** `python -m pip index versions <pkg>` for each of the nine packages a CI
+leg installs, then `pip install -e ".[test]" -c .github/constraints-min.txt`
+into a fresh `.smoke/min-venv`.
+**Result:** each `>=` bound in `pyproject.toml` has an exact release at the
+floor, so the `min` leg pins to a version that exists rather than to the lowest
+release above a gap:
+
+| Package | Bound | Floor release | Installed in `.smoke/min-venv` |
+|---|---|---|---|
+| `typer` | `>=0.27` | 0.27.0 | 0.27.0 |
+| `rich` | `>=15.0` | 15.0.0 | 15.0.0 |
+| `python-dotenv` | `>=1.2` | 1.2.0 | 1.2.0 |
+| `pydantic-settings` | `>=2.15` | 2.15.0 | 2.15.0 |
+| `httpx` | `>=0.28` | 0.28.0 | 0.28.0 |
+| `pillow` | `>=12.3` | 12.3.0 | 12.3.0 |
+| `pytest` | `>=9.1` | 9.1.0 | 9.1.0 |
+| `ruff` | `>=0.16` | 0.16.0 | 0.16.0 |
+| `mypy` | `>=2.3` | 2.3.0 | 2.3.0 |
+
+`rich` and `pillow` are at their floor *and* their ceiling — 15.0.0 and 12.3.0
+are the latest releases — so for those two the `min` and `max` legs install the
+same version until the next release.
+**Consequence:** `.github/constraints-min.txt` is these nine pins. The `min` leg
+is not speculative: the full gate was run against it (next entry).
+
+### The minimum-version leg is green — measured, not assumed
+**Date:** 2026-09-21
+**How:** in `.smoke/min-venv` (the nine floors above, Python 3.11.9):
+`ruff check`, `mypy`, `pytest -m "not slow"`
+**Result:** Ruff *All checks passed*; mypy *Success: no issues found in 119
+source files*; pytest **2334 passed, 26 skipped, 76 deselected** — identical to
+`.smoke/ci-venv` at the latest versions.
+**Consequence:** the risk that pinning Ruff and mypy to their floors reddens CI
+for a reason unrelated to Optica was checked rather than argued about, and did
+not materialize. The `min` leg runs the full gate, not a reduced one.
+
+### `optica[web]` unskips 62 tests, not 27 — and brings real Click
+**Date:** 2026-09-21
+**How:** `pytest --collect-only -q` per file in `.venv`; then a fresh
+`.smoke/web-venv` built with `pip install -e ".[test,web]"` — exactly what the
+web leg installs — and the full gate run in it.
+**Result:** the breakdown:
+
+| Skipped without `optica[web]` | Tests |
+|---|---|
+| `tests/unit/server/test_routes.py` (module-level `importorskip`) | 49 |
+| `tests/unit/server/test_app.py::TestServe` | 8 |
+| `tests/integration/test_server.py` (socket tests) | 5 |
+| **Total** | **62** |
+
+Confirmed by difference: 2396 passed with the extra, 2334 without.
+`.smoke/web-venv` resolved `fastapi` 0.141.1, `uvicorn` 0.53.0, `starlette`
+1.6.0 and **`click` 8.5.0**, with no torch and no `open-clip-torch`. Gate:
+Ruff clean, mypy clean, **2396 passed, 12 skipped, 76 deselected**.
+**Consequence:** the pass 6 brief's figure — *"27 tests — 19 route, 8
+TestServe"* — undercounts. `test_routes.py` collects 49 (34 `def test_`
+functions, parametrized), and the 5 integration socket tests were not in the
+brief's count at all. The requirement is unchanged and the arrangement is
+unchanged; only the number CI recovers is larger. The web leg is also where
+real Click is present, which is why the `import click` guard runs on the
+extras-free legs instead.
+
+### `optica setup --ci` on a clean home, twice
+**Date:** 2026-09-21
+**How:** with `HOME`/`USERPROFILE` pointed at an empty directory:
+`optica setup --ci` twice in `.smoke/min-venv`, then once each in
+`.smoke/ci-venv` and `.smoke/web-venv`.
+**Result:** first run *"configuration created at …\.optica\config.toml"*, exit
+0; second run *"configuration already present at …"*, exit 0. One file written,
+`.optica/config.toml`. No prompt, no install, no environment detection. Same in
+all three environments, and `optica --version` printed `optica 0.1.1` in each.
+**Consequence:** the step is safe to put on every matrix leg. It had never run
+outside a developer venv before this; it does not read or write anything outside
+`$HOME/.optica/`, so a runner's home is all it needs.

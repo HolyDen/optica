@@ -13,35 +13,119 @@ concurrency:
 
 jobs:
   check:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # Three runners from the start: development happens on Windows, so Linux
-        # and macOS get no local coverage at all, and Windows filesystem
-        # behaviour (reserved device names, trailing dots, path length) differs
-        # from both. A Python version matrix arrives in pass 6.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Plan § "Tech Stack" → *Keeping current* asks for a version matrix over
+        # the minimum **and** maximum declared versions of what each leg
+        # installs, and puts its cost at two legs. Four legs carry that, the
+        # three runners pass 1 established, and the whole supported Python range
+        # (3.11-3.13, per `pyproject.toml`'s classifiers) without a cross
+        # product: each leg differs from its neighbours in as few dimensions as
+        # the properties below allow.
+        #
+        # Two properties the plan requires of the arrangement, not of any
+        # particular leg:
+        #
+        #   1. `optica[web]` on AT LEAST ONE leg. Without it 62 tests — 49 in
+        #      `tests/unit/server/test_routes.py`, 8 in `TestServe`, 5 socket
+        #      tests in `tests/integration/test_server.py` — skip on every
+        #      runner, which is the state CI was in from pass 3 to pass 6.
+        #   2. AT LEAST ONE leg installing NO extras at all. That leg is what
+        #      holds the import-time contract to account: the FastAPI-free
+        #      modules, and `server/__init__.py` staying logic-free. It is also
+        #      the only place a stray `import click` under `src/` still fails,
+        #      because uvicorn brings real Click to the web leg (verified
+        #      2026-09-14, `notes/verified.md`). Three legs satisfy it.
+        #
+        # The torch stack is never installed here (plan § "CI/CD"): it is
+        # unpinned, so it has no minimum to test against, and `optica[clip]`
+        # cannot be added because `open-clip-torch` declares torch
+        # unconditionally. Those tests carry `@pytest.mark.slow` and run locally.
+        include:
+          # The floor, in every dimension at once: oldest supported Python,
+          # every dependency pinned to its declared lower bound, nothing
+          # optional installed.
+          - name: linux-min-py311
+            os: ubuntu-24.04
+            python: "3.11"
+            deps: min
+            extras: ""
+
+          # The ceiling, and the only leg that exercises the browser UI.
+          - name: linux-max-py313-web
+            os: ubuntu-24.04
+            python: "3.13"
+            deps: max
+            extras: "web"
+
+          - name: macos-max-py312
+            os: macos-latest
+            python: "3.12"
+            deps: max
+            extras: ""
+
+          # Windows is not a primary target, but it is the development
+          # platform, so CI is where it meets a Python it has not been run on.
+          - name: windows-max-py313
+            os: windows-latest
+            python: "3.13"
+            deps: max
+            extras: ""
 
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up Python 3.11
+      - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
 
-      - name: Install
-        # `optica[test]` carries pytest, Ruff and mypy only. The torch stack
-        # never reaches CI.
-        run: python -m pip install -e ".[test]"
+      # Two install steps rather than one with an expression, so the log says
+      # which of the two resolutions ran. `optica[test]` carries pytest, Ruff
+      # and mypy only.
+      - name: Install — maximum declared versions
+        if: matrix.deps == 'max'
+        run: python -m pip install -e ".[test${{ matrix.extras && format(',{0}', matrix.extras) || '' }}]"
+
+      - name: Install — minimum declared versions
+        if: matrix.deps == 'min'
+        # `constraints-min.txt` pins each package to the lowest release that
+        # satisfies its `>=` bound. A bound moved in `pyproject.toml` moves here
+        # in the same commit.
+        run: python -m pip install -e ".[test]" -c .github/constraints-min.txt
+
+      - name: Report what resolved
+        # Print the breakdown, not the total: a matrix leg that silently
+        # resolved something other than what its name claims is the failure this
+        # step exists to make visible.
+        run: python -m pip list
+
+      - name: No Click, and no torch stack
+        if: matrix.extras == ''
+        # The extras-free leg's reason for existing, asserted rather than
+        # assumed. Where real Click IS present — the web leg, via uvicorn — a
+        # mistaken `except click.UsageError` compiles, runs, and silently never
+        # fires, because Typer raises its vendored `typer._click` class instead.
+        # This leg is the one environment in which that mistake is still loud.
+        run: >-
+          python -c "import importlib.util as u, sys;
+          present = [m for m in ('click', 'torch') if u.find_spec(m) is not None];
+          sys.exit('must not be installed on this leg: ' + ', '.join(present)) if present
+          else print('click and torch absent, as required')"
 
       - name: Ruff
         run: ruff check
 
       - name: mypy
         run: mypy
+
+      - name: optica setup --ci
+        # Plan § "CI/CD" sequences this between install and pytest. Config
+        # initialization only: no install, no environment detection, no prompts.
+        run: optica setup --ci
 
       - name: Pytest
         # Anything importing torch is marked `slow` and runs locally instead.

@@ -4821,3 +4821,92 @@ severity is a confusing screen, never a wrong file.
 **Also carried to the README** at checkpoint 2, stated next to the other V1
 limitations: class names and paths containing square brackets may display
 incompletely in terminal output, while the files on disk are unaffected.
+
+### Checkpoint 1 — the CI matrix
+**Pass:** 6   **Date:** 2026-09-21   **Where:** `.github/workflows/ci.yml`,
+`.github/constraints-min.txt`
+
+**Extended, not rewritten.** `checkout@v6` and `setup-python@v6` were bumped by
+hand before this pass and are unchanged. The triggers, the `concurrency` block,
+`fail-fast: false`, the three runners and the `optica --version` tail step are
+pass 1's, carried forward.
+
+**The arrangement — four legs.**
+
+| Leg | Runner | Python | Deps | Extras |
+|---|---|---|---|---|
+| `linux-min-py311` | `ubuntu-24.04` | 3.11 | **min** | none |
+| `linux-max-py313-web` | `ubuntu-24.04` | 3.13 | max | **web** |
+| `macos-max-py312` | `macos-latest` | 3.12 | max | none |
+| `windows-max-py313` | `windows-latest` | 3.13 | max | none |
+
+Both properties l.132 requires survive it: `optica[web]` on one leg, and three
+legs installing no extras at all. It also covers 3.11/3.12/3.13 and both ends of
+the declared dependency range without a cross product — 4 legs, against the 18 a
+full `os × python × deps` product would cost.
+
+**The min leg is real, not nominal.** `.github/constraints-min.txt` pins all
+nine packages to the lowest release satisfying each `>=` bound; every floor
+exists as a real release (`notes/verified.md`). The obvious objection — that
+pinning Ruff to 0.16.0 and mypy to 2.3.0 reddens CI for reasons that have
+nothing to do with Optica — was answered by building `.smoke/min-venv` and
+running the full gate in it: Ruff clean, mypy clean, 2334 passed, identical to
+the latest versions. So the min leg runs the whole gate rather than a reduced
+one.
+
+**`ubuntu-24.04`, pinned — the decision and why.** `ubuntu-latest` moves to
+Ubuntu 26.04 over a rollout that **begins 19 October 2026 and completes 19
+November 2026** (actions/runner-images#14748, fetched today). The brief gave the
+start date; the month-long, *gradual* middle is the part that decides this. For
+those four weeks `ubuntu-latest` is nondeterministic — two runs of the same
+commit can land on different operating systems — and a red CI that cannot be
+reproduced is exactly what *"it must not be left red"* forbids. Ubuntu is also
+the only Linux check there is, since Windows is the development platform, so it
+is the leg that should change when a human decides it changes and not otherwise.
+GitHub's own README says to pin during a migration window. 24.04 is LTS,
+supported to 2029, so the pin costs nothing near-term.
+**Not pinned: `macos-latest` and `windows-latest`.** Deliberate asymmetry, on
+the narrow grounds that no comparable migration is announced for either right
+now. Three pins to maintain against one live hazard is worse than one. **When
+the rollout completes, a human moves this leg to `ubuntu-26.04` or back to
+`ubuntu-latest`** — that is the only maintenance this pin creates.
+
+**A count in the brief that measurement did not support.** The brief says 27
+tests — 19 route, 8 TestServe — skip without `optica[web]`. It is **62**: 49
+route (34 parametrized functions), 8 `TestServe`, and 5 integration socket tests
+the count omitted. Confirmed by difference, 2396 with the extra against 2334
+without. Nothing about the requirement or the arrangement changes; CI recovers
+more than the brief claimed.
+
+**Two defects in the first draft of the workflow, both found by expanding it
+rather than reading it.** A script walked the parsed YAML and printed each leg's
+steps as concrete commands, with the `${{ }}` expressions evaluated:
+- the extras expression produced `pip install -e ".[test],web"` — extras
+  *outside* the bracket, which installs nothing optional and would have left the
+  web leg silently skipping all 62 tests while reporting green. Now
+  `".[test,web]"`.
+- the Click/torch guard was written as `python -c … && exit 1 || echo …`, which
+  depends on how the leg's shell treats a native command's non-zero exit;
+  Windows legs default to `pwsh`, not bash. It now runs the check inside Python
+  and exits on its own, so no shell semantics are involved.
+
+Reading the file would have caught neither. This is the *print the breakdown,
+not the total* rule applied to a config file: the expanded per-leg command list
+is the breakdown.
+
+**The guard is proved both ways.** `python -c "…find_spec…"` exits 0 in
+`.smoke/ci-venv` and `.smoke/min-venv` (*"click and torch absent, as
+required"*) and exits 1 in `.venv` (*"must not be installed on this leg: click,
+torch"*). It runs only on the extras-free legs, because the web leg genuinely
+has Click — uvicorn declares it.
+
+**What is still unverifiable here.** A workflow cannot be checked without
+pushing, and `git push` is denied to the agent (`pass-6.md` § "Known limit").
+What *was* checked: the file parses as YAML; every leg's command list was
+expanded and inspected; and each of the three distinct environments the matrix
+creates was built locally and run through the whole step chain — install,
+absence guard, Ruff, mypy, `optica setup --ci`, `pytest -m "not slow"`,
+`optica --version`. The three stand-ins are `.smoke/min-venv`, `.smoke/ci-venv`
+and `.smoke/web-venv`. All green. What that cannot cover: Linux and macOS
+themselves, Python 3.12 and 3.13 (everything local is 3.11.9), and the runner
+images.
