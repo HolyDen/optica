@@ -5167,3 +5167,169 @@ planned, with pass 6 verifying rather than authoring.
   `Requires-Python: >=3.10` and carries no classifiers at all; it predates pass
   0's edits. Ship-time note: clear `dist/` before building 0.2.0, or
   `twine upload dist/*` will try to re-upload 0.1.0 and 0.1.1.
+
+### Checkpoint 4 — the full suite, and the pass 6 boundary
+**Pass:** 6   **Date:** 2026-09-21   **Where:** whole repo
+
+**How it was run.** Background process writing to a log, as planned, then read
+from the log's final counts line rather than from the exit code. It finished in
+**80.8s**, so it would in fact have fitted inside the Bash tool's two-minute
+foreground limit — the background run was the right call made on an estimate
+that turned out conservative, and that is worth recording rather than
+presenting the choice as necessary.
+
+**The arithmetic, reconciled.**
+
+```
+collected, both runs                         2501
+
+CI-style (.venv, -m "not slow")
+    2413 passed + 12 skipped + 76 deselected = 2501   OK
+
+full suite (.venv, no -m filter)
+    2489 passed + 12 skipped +  0 deselected = 2501   OK
+                                0 failed
+
+slow tests that ran   = 2489 - 2413 =  76
+slow tests deselected under -m "not slow" =  76   equal
+```
+
+So **all 76 slow tests passed; none skipped, none failed.** The skip count is
+identical in both runs at 12, which means no slow test contributed a skip.
+
+**The 12 skips, named** (`-rsf`), none of them slow:
+- 5 x `tests/unit/test_tree.py` — the `_NO_LOGIC` package `__init__` files
+  (`export/`, `input/`, `server/`, `training/`, `utils/`).
+- 7 x deliberate stubs: `cli/test_classify.py:299` (pass 4);
+  `cli/test_main.py:279`, `config/test_manager.py:389`,
+  `utils/test_lockfile.py:204`, `utils/test_prompts.py:223`,
+  `utils/test_system.py:190` and `:198` (pass 5).
+
+**The 76 slow tests, by file:** `training/test_models.py` 31,
+`training/test_engine.py` 10, `input/test_clip.py` 7,
+`training/test_trainer.py` 6, `training/test_splits.py` 6,
+`training/test_transforms.py` 5, `utils/test_mlstack.py` 3,
+`training/test_data.py` 3, `export/test_pytorch.py` 3,
+`training/test_checkpoints.py` 2.
+
+---
+
+## Pass 6 — boundary
+
+**Milestone, as `pass-6.md` states it:** *"The workflow file parses as valid
+YAML, README and CHANGELOG are complete, and the full test suite passes locally
+including the slow tests."* **Met, all three.**
+- `ci.yml` parses as valid YAML — 4 legs, 11 steps, `push` + `pull_request`.
+- `README.md` complete: 14 sections, every checkable claim verified against the
+  installed package and, for the `.gitignore` claim, against a real run.
+- `CHANGELOG.md` complete: `pass-6.md`'s exact entry, no date.
+- Full suite green locally including slow: 2489 passed, 12 skipped, 0 failed.
+
+**Commits this pass**, in order:
+
+| Commit | What |
+|---|---|
+| `f03930e` | `fix(logging)` — escape caller text so a bracketed extra survives Rich |
+| `718135c` | `docs(build-log)` — the unescaped `console.print` sites, as fast-follow |
+| `efe4dca` | `ci(workflow)` — the full version matrix, web and extras-free legs |
+| `6d05eb7` | `docs(readme)` — rewritten for V1, verified against the shipped package |
+| `133868a` | `feat(workspace)` — drop a `.gitignore` in the folders Optica creates |
+| `a1fc3a6` | `docs(changelog)` — `CHANGELOG.md` with the 0.2.0 entry |
+
+Two of them touch `src/`, both deliberate exceptions to `pass-6.md`'s *no
+`src/` code*, each assigned per item: `f03930e` (checkpoint 0) and `133868a`
+(checkpoint 2b).
+
+**Ruff clean, mypy clean (121 source files), in `.venv`, `.smoke/ci-venv`,
+`.smoke/min-venv` and `.smoke/web-venv`.** `version` in `pyproject.toml` is
+untouched at `0.1.1`. Nothing was pushed.
+
+### The standing list, restated in full at the pass 6 boundary
+
+Everything below is implemented and tested and has **never run against the real
+thing**. Pass 5 wrote it; this is it carried forward with pass 6's changes
+marked.
+
+1. **The whole browser surface.** `optica label`, `optica curate`,
+   `optica.label()`, `optica.curate()`, and both browser stages of
+   `optica run` / `optica.run()`. *(Pass 3 drove the server and both pages live;
+   what has never run is a browser stage **inside the composite pipeline**.)*
+   With it: the suppression of step-level resume prompts inside `run`, and the
+   API's `Labeling complete` / `Curation complete` lines.
+2. **The whole terminal prompt surface.** No prompt has ever been answered at a
+   real terminal: R/C/S resumption, the **C** step selector, the discard
+   confirmation, **S**, setup's environment prompts, the extras prompt, the
+   variant prompt, the API-key prompt, the Review's `Proceed with installation?`,
+   and both hardware safety prompts. Rich's rendering of those menus, and the
+   default marker, are unverified.
+3. **`optica run`'s resumption, executed.** No live run has ever *started from*
+   a resume point.
+4. **Interruption and its exit codes.** No live Ctrl+C inside a `run`-driven
+   stage. 130 and 3 are asserted from raised exceptions and scripted answers.
+5. **`optica setup`'s first-install path — all of it.** No `pip install` has run
+   on any path: command construction, the two-command torch split, per-extra
+   progress, the failure path, the incomplete message and its retry command,
+   `--upgrade`, and the repair path.
+6. **Setup's environment cases except case 1.** Never run: the mismatch hard
+   error, the single-found confirmation, the more-than-one picker, creating a
+   venv, the create-name collision, skip-into-system-Python, and **every conda
+   path**.
+7. **The no-GPU branch.** This machine has an RTX 4070 Ti: the
+   `torch-gpu`-with-no-GPU safety prompt, CPU index resolution, and every CUDA
+   index except `cu130` are unexercised.
+8. **The MPS path.** Apple-silicon device selection, written and never run.
+9. **The warning contract.** All sixteen `WarningCode` values and the
+   `warnings.warn` emission are test-only.
+10. **Tier 5.** `Classifier` has never been constructed outside a test.
+11. **The Tier 3/4 functions individually.** `optica.fetch()`, `optica.train()`
+    and `optica.export()` have run live only *inside* `optica.run()`;
+    `optica.label()`/`optica.curate()` not at all.
+12. **`discard_after` against a locked file**, and `--output`'s create prompt
+    against a directory a real run had populated. *(Checkpoint 2b exported into
+    a hand-made folder, but under `--yes`, so the prompt still has not fired.)*
+13. **Every platform but Windows.** Every live run remains on Windows 11.
+14. **From pass 2:** the **Flickr adapter** has never been exercised with a real
+    key — no key, and one needs a Flickr Pro subscription.
+
+**What pass 6 changed on this list.**
+- **Advanced, not cleared — `optica setup --ci`.** Item 13 said it *"has never
+  run on a runner, outside a venv — pass 6 adds it to the matrix, and that is
+  the first time it will."* Pass 6 added it to all four legs and ran it locally
+  in three venvs against a clean `HOME`, twice each (created, then already
+  present), exit 0. It still has not run **on a runner**.
+- **Advanced, not cleared — the 62 web tests.** From pass 3 to pass 6 they
+  skipped on every runner. They now run in `.smoke/web-venv` locally (2396
+  passed, with real Click present). They have still never run on Linux or macOS.
+- **New item — the CI matrix itself has never run on a runner.** Four legs,
+  verified only by local stand-ins (`.smoke/min-venv`, `.smoke/ci-venv`,
+  `.smoke/web-venv`) plus a per-leg expansion of the YAML. `git push` is denied
+  to the agent; `pass-6.md` § "Known limit" anticipates exactly this.
+- **Nothing was removed.** Pass 6's two `src/` changes were both verified
+  against real runs, but neither clears a standing-list item.
+
+### Does the README agree with the standing list?
+
+**Now, yes — after one correction made at this checkpoint.** They did not fully
+agree when checkpoint 2 was committed.
+
+The README's *Status* section is a deliberate **subset**: 6 of the 14 items,
+chosen as the ones a user's own decisions depend on — prompts (2), Flickr (14),
+MPS (8), setup's first install and its CPU-only branch (5, 7), resumption from a
+real interruption (3, 4), and now platforms (13). No README statement is
+contradicted by any item on the list; the rest are internal-facing (the warning
+contract, Tier 5 construction, conda paths, `discard_after` against a locked
+file) and belong in this log rather than in a user's first page.
+
+**The gap that was found and closed.** Item 13 — *every live run has been on
+Windows* — was missing from the README, and it stays true at ship time: CI
+deliberately never installs PyTorch, so what runs on Ubuntu and macOS is the
+test suite, not a training run. A reader of *Platform support* alone could
+reasonably have concluded the pipeline had been run on Linux. A sixth Status
+bullet now says so plainly. The three README verification scripts were re-run
+after the edit: 0 failures.
+
+**One thing the README says that is true at ship and not before.** *"CI runs on
+Ubuntu, macOS and Windows"* describes the shipping configuration. The workflow
+has never executed. That is the same gate the commented CI badge sits behind —
+a human pushes, sees green, uncomments — so both become true together, and
+neither is claimed before then.

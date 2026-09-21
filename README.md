@@ -42,6 +42,10 @@ covered by tests but have not been run end to end against the real thing:
   been run against an already-provisioned machine with a CUDA GPU.
 - **Resuming after a genuine interruption.** Resumption is driven by tests from
   constructed state, not from a real Ctrl-C.
+- **The pipeline on Linux and macOS.** Every end-to-end run so far — fetch,
+  train, export — has been on Windows. CI covers all three platforms, but it
+  deliberately never installs PyTorch, so what runs there is the test suite
+  rather than a real training run.
 
 Please report anything you hit.
 
