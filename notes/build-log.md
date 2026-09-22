@@ -5409,3 +5409,18 @@ DIFFERENTLY (all decided: items 14, 28, 41), 1 BUILT BUT UNTESTED (item 19),
 1 AMBIGUOUS (item 1), and 1 partly NOT BUILT as a **silent deviation** (item
 21, the collision-rename count on `train --manifest` and on every API path).
 **Reversible?** Nothing to reverse — no code was touched.
+
+### Item 21 of the protective-defaults check is decided: fast-follow
+**Pass:** after 6   **Date:** 2026-09-22   **Where:** plan l.680; `cli/classify.py`, `api/simple.py`
+**Found:** the protective-defaults check (`9d7eeb5`, `4e9d210`) left item 21 as
+the one silent deviation of 49. l.680's collision-rename count is reported on
+`--folder`/`--manifest` labeling but dropped on `optica train --manifest`
+materialization and on every API path. The suffixing itself is correct
+everywhere — no file is ever overwritten. What is missing is the notification
+l.680 attaches to it: "so the renaming is never silent."
+**Decided:** fast-follow, third in the post-release order, after item 33's test
+and the removal of `replace_destination`. The CLI half is one line. The API half
+needs a result field or a warning code, both permanent public surface, so it is
+chosen deliberately after release rather than quickly before it.
+**Why not before release:** no user file is harmed; the gap is a missing
+message. The same audit found no protective behaviour unbuilt.
