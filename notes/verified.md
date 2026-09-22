@@ -1849,3 +1849,92 @@ are not what this build would produce. Nothing in the repo depends on them.
 otherwise `twine upload dist/*` would try to re-upload 0.1.0 and 0.1.1. Those
 uploads fail as duplicates, which is the safety net `CLAUDE.md` describes
 working as intended, but it is a confusing way to discover a stale directory.
+
+---
+
+## Protective-defaults conformance check — 2026-09-22
+
+Read-only verification, not a pass. Nothing under `src/`, `tests/` or `spec/`
+was changed. Scope: **protective defaults** only — requirements that prevent
+harm a user would not notice until it happened (data loss, overwriting or
+deleting user files, destructive actions without confirmation, committing large
+or sensitive files, leaking secrets). Not every behavioural requirement.
+
+Checkpoint 1 enumerated **49 requirements** from the plan, read in place. Seed
+keywords were an index only; terms added were `destructive`, `silently`,
+`API key`/`credential` (`secret` has zero hits in the plan), `127.0.0.1`/
+`localhost`/`network-exposed`/`session key`, `originals`/`owns the bytes`/
+`ownership`, `copy, never move`, `collision`/`auto-increment`/`suffix`,
+`mask`, `read-only`, `interrupted`/`Ctrl+C`, `weights_only`/`pickled`,
+`reserved`, `tilde form`.
+
+Verdicts: BUILT AND TESTED · BUILT BUT UNTESTED · BUILT DIFFERENTLY (with the
+build-log entry that decided it) · NOT BUILT · AMBIGUOUS. A deviation with no
+build-log entry is recorded as a **silent deviation**.
+
+**Method check (the control).** Item 6 — plan l.289's folder-level `.gitignore`,
+built in pass 6 at commit `133868a`. Found without consulting the log:
+`src/optica/utils/workspace.py:54` `create_ignored()`, called at
+`training/trainer.py:379`, `cli/classify.py:1477,2032,2060,2063` and
+`api/simple.py:1474,1736`; tested by `tests/unit/utils/test_workspace.py`
+(12 tests, each constructing its own folder state). The method finds the
+control, so the verdicts below are trusted.
+
+**Test state at the time of this check:** `.venv/Scripts/python -m pytest
+tests/ -q -m "not slow"` → `2413 passed, 12 skipped, 76 deselected`.
+
+### Checkpoint 2a — sections A–G (items 1–30)
+
+#### Findings first — not built, or deviating
+
+| # | Plan line (quoted) | Verdict | Evidence | Notes |
+|---|---|---|---|---|
+| 21 | l.680 "Collisions are resolved by **deterministic suffixing in row order** (`img.jpg`, `img_2.jpg`, `img_3.jpg`…), **with the count reported on completion so the renaming is never silent**." | **Partly NOT BUILT — silent deviation** | Suffixing: `input/local.py:609` `copy_into_dataset` → `validation.py:337` `unique_name`; `report.renamed` incremented at `local.py:655`. Reporting: `cli/classify.py:1032-1035` **only**. | The suffixing is correct and tested (`tests/unit/input/test_local.py:286` `test_same_basename_from_two_directories_suffixes_in_row_order`, `:297` post-conversion collisions). The **count-reported** clause is honoured on one path only — `--folder`/`--manifest` labeling. It is **not** reported by `optica train --manifest` materialization (`cli/classify.py:1608-1630` prints `Materialized N images` and drops `report.renamed`), and `renamed` appears **nowhere** in `api/simple.py`, so no API path surfaces it on any result or warning. Manifest input is the plan's own worked example of the collision case (`/a/img.jpg` and `/b/img.jpg`). **No build-log entry decides this** — grep for `renamed`/`collision` in `notes/build-log.md` returns nothing on the subject. Silent, not considered. |
+| 19 | l.968 / l.1699 "Deletion rules: … **user-provided images are always copied, originals untouched** (never staged or deleted)." | **BUILT BUT UNTESTED** (the *never staged* clause) | Structural: the only writers under `~/.optica/staging/` are `input/fetch.py:472,583` (auto-fetch images), `input/curation.py:267` and `input/sessions.py` (state files), `input/manager.py:634,662` (list/clear). No user-image path writes there. | The *copied, originals untouched* half **is** tested — `tests/unit/input/test_local.py:274` `test_originals_untouched_and_counts_reported` reads the source bytes before and after. The *never staged* half rests on structure alone: a regression that began staging user images would fail no test. |
+| 1 | l.261 "**`.env` belongs in the user's `.gitignore`** — the opposite of `.optica.toml`, which is committed deliberately, and the difference is that `.env` is where keys live." | **AMBIGUOUS** | `config/manager.py:243-247` loads `.env` at the env tier with `override=False`; Optica never writes it. `README.md:372` tells the user to add it themselves. | The plan's text does not settle what "built" would mean: this is a statement about where a user's file belongs, not an Optica behaviour. The only enforceable halves are item 6 (never touch the user's ignore files) and the README note, both present. |
+
+#### Built differently — decided, with citation
+
+| # | Plan line (quoted) | Verdict | Evidence | Decided at |
+|---|---|---|---|---|
+| 14 | l.841 "**'Overwrite' means replace.** The destination's existing **contents are removed before writing**… Merging into an existing dataset is not supported in V1." | **BUILT DIFFERENTLY** | `input/manager.py:361` `commit_dataset` — the new dataset is written to `input/manager.py:352` `partial_destination()` = `<parent>/.<name>.partial/`, the floor checks run on it, and only then is the old destination `shutil.rmtree`d and `os.replace`d. Prompt: `cli/classify.py:907` `_confirm_replace`, destructive, default N, `--overwrite` the only unattended route (`cli/classify.py:924` → `input/manager.py:322` `overwrite_refused`). API counterpart `api/simple.py:836` `_require_free_destination`. Tests: `tests/unit/cli/test_label_command.py:389` `TestOverwritePrompt` (6 tests) incl. `:468` `test_nothing_is_deleted_when_labeling_does_not_finish` and `:406` `test_overwrite_replaces_rather_than_merges` (asserts no `old*.jpg` survives). | `notes/build-log.md:2119` — *"The `dataset/` overwrite prompt deletes nothing until the new dataset is complete"*, pass 3, 2026-09-14. Rationale recorded: *"consent to replace a dataset is not consent to be left with no dataset when labeling does not finish"*. Replace-not-merge still holds: nothing old survives a commit. |
+| 28 | l.974 / Note 9 l.1632 "any `.partial` folder left in `<output>` by an interrupted run **is removed before the next export writes**." | **BUILT DIFFERENTLY** | `export/manager.py:295` `clean_stale_partials` removes only entries whose name matches `_EXPORT_NAME` (`.<family>_<N>cls_<date>_<time>[_ckptX][_x].partial`). Atomic write itself: `export/manager.py:437-465` — write into `.<name>.partial/` sibling, `rename` into place, `rmtree` on any exception. Tests: `tests/unit/export/test_manager.py:187` `test_only_export_shaped_partials_are_removed` (constructs both an export-shaped partial and a `.dataset.partial`, asserts only the first is removed), `:283` written-beside-not-in-place, `:303` `test_a_failure_leaves_nothing_visible`. | `notes/build-log.md:3335` — pass 4 export decision list, item 11: *"`--output .` would otherwise delete `.dataset.partial/`. A partial from the N branch is not recognisable and stays."* Narrower than the plan, and narrower in the protective direction. |
+
+#### Built and tested
+
+Each test below constructs its own condition in its body (a populated
+destination, a corrupt file, an existing folder) rather than inheriting one.
+
+| # | Requirement (plan line) | src evidence | test evidence |
+|---|---|---|---|
+| 2 | API keys never in `.optica.toml`; a key found there is a config-load-time error (l.263, l.1698) | `config/manager.py:216` `_reject_api_keys_in_project`, called at `:183` for the project tier only | `tests/unit/config/test_manager.py:104` `test_a_key_in_the_project_file_is_a_load_time_error`; `:111` the global file is fine |
+| 3 | `--view` masks the value, never the source (l.263) | `config/manager.py:471-478` — `_MASK` with the source annotation kept | `tests/unit/config/test_manager.py:343` `test_an_api_key_is_masked_but_keeps_its_source` (asserts the secret string is absent); `:349` `(not set)` |
+| 4 | `config --init` never emits `flickr_api_key` (l.267) | `config/manager.py:446` `if key in API_KEYS: continue` | `tests/unit/config/test_manager.py:300` `test_the_api_key_is_never_emitted` |
+| 5 | `log_file` stored in tilde form — `~` conceals the username (l.1171) | `training/runlog.py:38` `tilde_path`, used at `training/trainer.py:367` | `tests/unit/training/test_runlog.py:28,34` — under home and outside home |
+| 6 | **CONTROL** — folder-level `.gitignore`; never touches the user's (l.289) | `utils/workspace.py:54` `create_ignored` | `tests/unit/utils/test_workspace.py` — 12 tests, incl. `test_a_users_own_gitignore_survives_untouched`, `test_dataset_is_not_gitignored_by_any_call_site` |
+| 7 | `--yes` never picks a destructive option (l.183) | `utils/prompts.py:184` `if assume_yes and category is not PromptCategory.DESTRUCTIVE` | `tests/unit/utils/test_prompts.py:54` `test_never_touches_destructive_prompts` (asserts the prompt still fired) |
+| 8 | `--force` does not reach destructive prompts (l.212, l.1750) | `utils/prompts.py:180` — the early return is gated on `SAFETY` alone | `tests/unit/utils/test_prompts.py:81` `test_does_not_reach_destructive_prompts`; `:76` choice prompts unreached |
+| 9 | Conflict prompts fire before any action (l.229) | `cli/classify.py:966,1227,1606` — `_confirm_replace` precedes `serve()`/the copy on every write path; `:962` clip mode checks before the first request | `tests/unit/cli/test_label_command.py:391` asserts `fake.sessions == []` — the browser never opened; `:417` same for the declined prompt |
+| 10 | `config --init` create prompt is non-destructive, overwrite prompt destructive; a first-run command must not write silently (l.281) | `cli/config.py:139-171` — `CHOICE` + `assume_yes` on create, `DESTRUCTIVE` with no `assume_yes` on overwrite | `tests/unit/cli/test_config_command.py:89` `test_yes_does_not_answer_the_overwrite_prompt` (exit 3, asked despite `--yes`) |
+| 11 | The `.optica.toml` overwrite prompt defaults to N (l.278) | `cli/config.py:152` `default=False` | `tests/unit/cli/test_config_command.py:89`, `:103` accepted-overwrite path |
+| 12 | Pre-flight overwrite prompt keyed to the destination, not the input flag (l.821, l.835) | `cli/classify.py:907` `_confirm_replace(state, dataset, …)`; `input/manager.py:286` `destination_contents` | `tests/unit/cli/test_label_command.py:479` `test_a_different_dataset_path_is_the_destination_checked` |
+| 13 | Runs at command start, before the browser opens (l.837) | `cli/classify.py:966` — before `BrowserSession`/`serve`; `:1227` before curation serve | `tests/unit/cli/test_label_command.py:391` `test_unattended_without_overwrite_is_refused_before_the_browser` |
+| 15 | Originals untouched on every route; `--dataset` read in place, never copied (l.625) | `cli/classify.py:1635` `_ingest_dataset` — inspects and filters paths, writes nothing | `tests/unit/cli/test_train_command.py:231` unreadable left byte-identical on disk; `tests/unit/input/test_local.py:274` originals untouched on copy |
+| 16 | A manifest is disposable input, never rewritten (l.672) | `input/local.py:299`, `cli/classify.py:823` — parse only, no write path | `tests/unit/cli/test_label_command.py:256` `test_the_manifest_is_never_rewritten` (byte compare before/after a full run) |
+| 17 | Ownership rule; corruption check read-only, never deletes; dedup on `--dataset` excludes, never removes (l.799) | `input/validation.py:286` `inspect_in_place` (header-only, writes nothing) vs `:193` `process_owned` (owned bytes); `cli/classify.py:1671-1678` excludes duplicates and says *"the files are untouched"* | `tests/unit/cli/test_train_command.py:240` `test_duplicates_are_excluded_from_the_run_not_deleted` (asserts the copy still exists) |
+| 18 | Unreadable user files dropped, left untouched, listed individually (l.945, l.951) | `cli/classify.py:940` `_report_unreadable`; `input/local.py:234` `preflight` | `tests/unit/input/test_local.py:119` `test_unreadable_are_dropped_and_listed_files_untouched`; `tests/unit/cli/test_train_command.py:231` |
+| 20 | Copy, never move or link, into `dataset/`; disk-usage note at copy time (l.1668) | `input/local.py:609` `copy_into_dataset` — `read_bytes` then `write_bytes`, no `move`/`symlink`/`link` anywhere in `src/`; `input/local.py:579` `copy_note` printed at `cli/classify.py:1010,1604` | `tests/unit/input/test_local.py:274` originals byte-identical; `:351` the note's exact text |
+| 22 | Fetched images named by zero-padded index, never URL basename; numbering continues from the highest index (l.797) | `input/fetch.py:594` `next_index = max(…)+1`; `:629` `f"{next_index:04d}"` | `tests/unit/input/test_fetch.py:407` resume continues numbering; `:430` `test_numbering_continues_from_the_highest_index_not_the_count` |
+| 23 | Checkpoint `_x` collision suffix, active folder only (l.1093) | `training/checkpoints.py:74` `unique_folder` — `root.iterdir()`, casefolded | `tests/unit/training/test_checkpoints.py:43,47` — `test_archived_checkpoints_are_not_collisions` |
+| 24 | Export `_x` auto-increment on collision (l.1216) | `export/manager.py:248` `unique_name` — active subfolders only, dotfiles skipped | `tests/unit/export/test_manager.py:175` `test_collisions_take_the_x_suffix`; `:181` a stale partial is not a collision |
+| 25 | Staging preserved on interruption or Ctrl+C (l.891) | `cli/classify.py:1254-1272` — timeout and interrupt branches report and preserve; nothing is cleared | `tests/unit/cli/test_curate_command.py:189` timeout keeps 12 staged images and the deselection; `:197` Ctrl+C exits 130 with selections saved |
+| 26 | Warnings at fixed offsets; if neither fits, one at half the timeout — no configured value produces a silent shutdown (l.893) | `server/app.py:183` `warning_schedule` — `return fitting or [timeout_minutes / 2]` | `tests/unit/server/test_app.py:157-172` incl. `test_if_neither_fits_one_warning_fires_at_half`, parametrised over 5/3/1 minutes |
+| 27 | Fetch `.partial`; curation deselections preserved; labeling committed after each image (l.970–972) | `input/fetch.py:629-633` writes into `.partial` via temp+replace; `server/labeling.py:224,237,244,250` — `session.save()` after every interaction | `tests/unit/input/test_fetch.py:404` `.partial` contents survive; `tests/unit/cli/test_curate_command.py:346` resume restores deselections; `tests/unit/input/test_sessions.py:72` atomic write |
+| 29 | Both session files written by temp-file-and-move on every decision (l.1018) | `input/sessions.py` `atomic_write_json`, called from `save()` | `tests/unit/input/test_sessions.py:72` `test_the_write_is_atomic_and_leaves_no_temp_file` |
+| 30 | A session file that cannot be read or parsed is a hard error, not a recoverable prompt (l.1001, l.1006) | `input/sessions.py` — `OpticaLabelingError` / `OpticaCurationError`, version checked | `tests/unit/input/test_sessions.py:83,91,97,103,114` (labeling) and `:192,198,204` (curation) — unparseable, version mismatch, missing version, bad shape, unreadable |
+
+**Dead code noted, not changed:** `input/manager.py:338` `replace_destination`
+has no production caller — every write path goes through `partial_destination`
++ `commit_dataset`. Only `tests/unit/input/test_manager.py:214` calls it. Not a
+protective gap; recorded so it is found by reading rather than by colliding
+with it.

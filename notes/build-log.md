@@ -5333,3 +5333,37 @@ Ubuntu, macOS and Windows"* describes the shipping configuration. The workflow
 has never executed. That is the same gate the commented CI badge sits behind —
 a human pushes, sees green, uncomments — so both become true together, and
 neither is claimed before then.
+
+### Protective-defaults conformance check — checkpoint 2a, sections A–G
+**Pass:** none — a read-only audit between passes   **Date:** 2026-09-22
+**Where:** `notes/verified.md` § *Protective-defaults conformance check —
+2026-09-22*. **Nothing under `src/`, `tests/` or `spec/` was changed.**
+**What ran:** checkpoint 1 enumerated 49 protective requirements from the plan,
+read in place. Checkpoint 2a checked items 1–30 (sections A–G: secrets,
+gitignore, the destructive-prompt taxonomy, the `dataset/` overwrite, user-owned
+files, collision suffixing, atomicity and interruption).
+**Method control:** l.289's folder-level `.gitignore` (built in pass 6, commit
+`133868a`) was located from behaviour alone — `utils/workspace.py:54`
+`create_ignored` and its 12 tests — before any other verdict was trusted.
+**Found:**
+- **One silent deviation.** Item 21, plan l.680: collisions suffix correctly on
+  every path, but the *"count reported on completion so the renaming is never
+  silent"* clause is honoured only by `--folder`/`--manifest` labeling
+  (`cli/classify.py:1032`). `optica train --manifest` materialization drops
+  `report.renamed`, and `renamed` appears nowhere in `api/simple.py`. No
+  build-log entry decides this.
+- **Two built differently, both decided.** Item 14 (`dataset/` overwrite removes
+  at commit, not before writing) — decided at `notes/build-log.md:2119`, pass 3.
+  Item 28 (only export-shaped `.partial` folders are removed) — decided at
+  `notes/build-log.md:3335`, pass 4 item 11. Both verified in code and tests
+  rather than taken from the log.
+- **One untested clause.** Item 19: *user-provided images are never staged* rests
+  on structure alone; no test would fail if a path began staging them.
+- **One ambiguous.** Item 1: `.env` belongs in the user's `.gitignore` is a
+  statement about a user's file, not an Optica behaviour.
+- **25 of 30 BUILT AND TESTED**, each by a test that constructs its own
+  condition. Test state: 2413 passed, 12 skipped, 76 deselected (`-m "not slow"`).
+**Also noted, not changed:** `input/manager.py:338` `replace_destination` has no
+production caller.
+**Reversible?** Nothing to reverse — no code was touched. Checkpoint 2b (items
+31–49, sections H–N) follows.
