@@ -1938,3 +1938,80 @@ has no production caller — every write path goes through `partial_destination`
 + `commit_dataset`. Only `tests/unit/input/test_manager.py:214` calls it. Not a
 protective gap; recorded so it is found by reading rather than by colliding
 with it.
+
+### Checkpoint 2b — sections H–N (items 31–49)
+
+**Test state at the time of this half:** both legs run. `-m "not slow"` →
+`2413 passed, 12 skipped`; `-m "slow"` → `76 passed` (torch 2.14.0+cu130,
+timm 1.0.29 present locally). CI never installs the torch stack, so the second
+leg runs nowhere but a developer's machine.
+
+#### Findings first — test gaps and one deviation
+
+No item in 31–49 is NOT BUILT, and none deviates silently. What this half found
+is four gaps in what the tests *pin*, and one deviation that was decided.
+
+| # | What | Detail |
+|---|---|---|
+| — | **Seven `@pytest.mark.skip` stubs marked for passes that have since closed** | `tests/unit/cli/test_classify.py:299` (`stub - pass 4`), and six marked `stub - pass 5`: `tests/unit/cli/test_main.py:279`, `tests/unit/config/test_manager.py:389`, `tests/unit/utils/test_lockfile.py:204`, `tests/unit/utils/test_prompts.py:223`, `tests/unit/utils/test_system.py:190` and `:198`. Passes 4 and 5 are closed, so the reason string now reads as a forward promise that nothing will keep. **Two of the seven pin protective behaviour in this list:** `test_setup_takes_the_lock` (item 40) and `test_yes_never_drives_optica_setup` (the `--yes` taxonomy, plan l.1677). Both behaviours **are** built — `cli/setup.py:775,779` `acquire_lock("optica setup")`, and `assume_yes`/`state.yes` appear nowhere in `cli/setup.py` — so this is a test gap, not a build gap. |
+| 33 | **The *suppressed inside `optica run`* clause is untested** | The K/A/D/S prompt lives at `cli/classify.py:1483` `_checkpoint_housekeeping`, reached only from `_train_body` (`:1747`). `_run_body` (`:2390`) never calls it — `run` goes through `api.run()` at `:2421`. Suppression is therefore structural and correct, but no test asserts it: grepping `"What would you like to do"` across `tests/unit/cli/test_run_command.py`, `tests/unit/test_pipeline.py` and `tests/unit/api/` returns nothing. A refactor that routed `run` through `_train_body` would fire a prompt whose `D` branch deletes every prior checkpoint mid-pipeline, and no test would fail. |
+| 42 | **The `model.pt` security guarantee is tested only under `@pytest.mark.slow`** | `tests/unit/export/test_pytorch.py:108` marks the whole `TestExport` class slow, so `test_model_pt_loads_weights_only_and_reconstructs` (`:110`) is deselected on every CI leg by the standing rule that CI never installs torch. It passes locally (verified this session). The guarantee it protects — that the artifact never asks its consumer to pass `weights_only=False` — is the one whose breach would be silent. |
+| 49 | **The flag-batching stub is unfilled, but the behaviour is present** | `tests/unit/cli/test_main.py:280` `test_all_invalid_flag_values_are_reported_at_once` is skipped. The behaviour is built at `config/schema.py:205-226` — fixed-value and numeric-domain problems accumulate into one list. Verified by smoke run inside `.smoke/`: `optica train --epochs 0 --batch-size 0` prints both violations under one `✕ Invalid configuration` header. |
+
+#### Built differently — decided, with citation
+
+| # | Plan line (quoted) | Verdict | Evidence | Decided at |
+|---|---|---|---|---|
+| 41 | l.885 / l.1700 "the server binds to `127.0.0.1`, is never network-exposed… **Only the session Optica itself opened can drive it**… **Those two guards are the whole of V1's browser-security surface; anything further is post-V1 rather than an implementing pass's call.**" | **BUILT DIFFERENTLY — more than specified** | Both plan guards present: `server/app.py:67` `HOST = "127.0.0.1"`; session secret at `app.py:412` `secrets.token_urlsafe(24)`, compared with `secrets.compare_digest` at `routes.py:62,96`. **Beyond them**, `routes.py` adds a `Host`-header check (`tests/unit/server/test_routes.py:84` `test_a_foreign_host_is_refused`, `:88` right host wrong port) and turns the token into an `HttpOnly`, `SameSite=Strict`, per-port cookie (`app.py:419`, `routes.py:111`), with images served by ID and never by path (`test_routes.py:176` `test_a_path_is_never_an_id`). | `notes/build-log.md:2017` — *"Browser session key: a `Host` check and a session cookie"*, pass 3, 2026-09-14. Mutation-checked there (both checks replaced with `if False:` → 3 of 19 route tests failed). It carries a **human status line dated 2026-09-14**: *"kept, and an item for the next plan-amendment session to ratify… any further unspecified security behaviour is a stop, not an assumption."* The deviation is an addition in the protective direction against an explicit *anything further is post-V1* boundary, and it is the one item in these 49 already queued for a plan amendment. |
+
+#### Built and tested
+
+| # | Requirement (plan line) | src evidence | test evidence |
+|---|---|---|---|
+| 31 | `config --clear-staging` lists, confirms, then deletes (l.283, l.1756) | `cli/config.py:174-199` — `DESTRUCTIVE`, no `assume_yes`, listing printed first | `tests/unit/cli/test_config_command.py:219` `test_clear_staging_confirmation_is_destructive` (asked despite `--yes`, exit 3, images survive); `:240` unattended refuses rather than deleting |
+| 32 | Selecting an earlier step discards the later steps' staging **behind a confirmation**; S clears staging (l.752) | `cli/classify.py:2546-2560` — listing, then a `DESTRUCTIVE` confirm, then `pipeline.discard_after` (`pipeline.py:324`) | `tests/unit/cli/test_run_command.py:201` confirms before discarding; `:211` `test_declining_the_confirmation_returns_to_the_selector` (asserts the export folder still exists); `:225` confirming removes only what followed; `tests/unit/test_pipeline.py:313-350` per-step scope |
+| 33 | K/A/D/S: `--yes` picks K; the resume prompt is taken first because `D`/`A` are destructive (l.1095) | `cli/classify.py:1744-1747` — `_resume_prompt` first, housekeeping only when `resume is None`; `:1512` `assume_yes="K"`; `:1548` `act()` deferred until after every later question | `tests/unit/cli/test_train_command.py:495` `test_continuing_skips_checkpoint_housekeeping_entirely` (interactive, so the menu's absence is real); `:424` `test_nothing_is_deleted_when_a_later_question_stops_the_run`; `:378` four options offered |
+| 34 | Adopt-the-new-list deletes departing entries; **adopting is never automatic** (l.1002) | `cli/classify.py:856-878` — `assume_yes="R"`, `A` only on an explicit answer; `input/sessions.py` `adopt_classes` | `tests/unit/cli/test_label_command.py:577` `test_yes_never_adopts`; `:554` adopting requeues; `tests/unit/input/test_sessions.py:120` skips survive, departing labels do not |
+| 35 | "Start fresh" deletes the staging and any state file that accompanies it (l.1020) | Labeling: `cli/classify.py:872` `fresh.path.unlink()`. Curation: `:1093,1107`. Fetch: the `.partial` directory is itself the state | `tests/unit/cli/test_label_command.py:545` `test_start_fresh_discards_the_session`; `tests/unit/cli/test_curate_command.py:365` `test_start_fresh_discards_selections_not_images`; `tests/unit/cli/test_fetch_command.py:288` `test_declining_resume_starts_fresh_for_that_class`; `tests/unit/cli/test_run_command.py:173` `test_s_clears_staging_and_starts_at_the_top` |
+| 36 | Filesystem-safe class names — not `.`/`..`/all-dots (`..` would resolve outside `dataset/`), no separators, no control chars, no Windows-rejected chars, 50-char cap, no leading `-`, no trailing `.`/space, no reserved device names (l.242) | `input/classes.py:131` `class_name_problem` — every clause in the plan's order | `tests/unit/input/test_classes.py:29-60` — 25 parametrised rows, one per clause; `:63` leading hyphen incl. `--yes` as a value; `:80,84` control range ends at U+001F; `:90` trailing dot/space; `:121` every failing name listed at once; `:136` `test_no_name_is_rewritten` |
+| 37 | Case-insensitive duplicate blocking — a case variant is a hard error at parse, exact duplicates collapse (l.243) | `input/classes.py:184` `normalize_class_names` | `tests/unit/input/test_classes.py:111,114` — collapse silently, and the error names both colliding spellings |
+| 38 | Optica never creates a venv into an existing directory; **`--force` does not bypass** (l.404) | `cli/setup.py:241` `_create_venv` — re-asks in a loop, no proceed-anyway branch to suppress | `tests/unit/cli/test_setup.py:295` re-asked (asserts the prompt count is 2); `:307` `test_force_does_not_bypass_it` |
+| 39 | Global config merged if present: values not collected left untouched, nothing ever removed; a skipped prompt preserves (l.458) | `cli/setup.py:598` `_write_config` writes only `plan.keys`; `config/manager.py:501` `_write_key` is line-oriented, replacing one line and leaving the rest (including comments) | `tests/unit/cli/test_setup.py:583` `test_enter_preserves_an_existing_value` (writes `flickr_api_key = "kept"`, skips the prompt with Enter, asserts it survives); `tests/unit/config/test_manager.py:283` replaced not duplicated |
+| 40 | Global lock file hard-blocks concurrent write commands; dead PID silently cleaned; three exempt (Note 2, l.1619; l.1719) | `utils/lockfile.py:218` `acquire_lock`; taken by all thirteen blocked entry points — `cli/classify.py:486,793,1077,1385,1940,2278`, `cli/config.py:91,95`, `cli/setup.py:775,779`, and the API mirrors at `api/simple.py:687,1026,1182,1348,1687` | `tests/unit/utils/test_lockfile.py:107` a live lock blocks; `:122` the *blocking* command is named; `:136` dead PID removed and the command runs; `:146,151` corrupt/short lock treated as stale; `:165,172` exempt vs blocked lists; `:186` two CLI entry points blocked before touching network or staging. **See the stub note above for `setup`.** |
+| 42 | `model.pt` is a dict of tensors and JSON primitives, never a pickled `nn.Module`, loadable under `weights_only=True` (l.1232) | `export/pytorch.py:81-95` — payload built from `state_dict` + primitives, then re-read with `weights_only=True` and rebuilt with `strict=True` **before** the folder is renamed into place | `tests/unit/export/test_pytorch.py:110` — asserts the key tuple, that every non-`state_dict` value is `str\|int\|float\|list`, and that reconstruction succeeds. **Slow-marked; see above.** |
+| 43 | Open Images label map verified on every load; deleted and re-downloaded if corrupt (l.759, Note 13 l.1636) | `input/openimages.py:227-266` — digest compared, both cache files `unlink`ed, re-downloaded once, then a hard error | `tests/unit/input/test_openimages.py:197` `test_a_corrupt_cache_is_deleted_and_downloaded_again`; `:331,339` etag change and silent replacement of the per-mid cache |
+| 44 | CLIP weights verified on every load; corrupt deleted and re-downloaded, **cache path reported** (l.855, l.1527) | `input/clip.py:257-293` — `_remove_cached` (follows a Hub symlink to its blob), one repair attempt, then `OpticaCLIPLoadError` naming the path | `tests/unit/input/test_clip.py:153` good cache used without a download; `:169` `test_a_bad_cache_is_deleted_reported_and_downloaded_again` |
+| 45 | `random_state` generated once and reloaded on resume — prevents silent data leakage (l.1075, l.1680) | `training/trainer.py:295-299` — read from the resumed checkpoint, otherwise `secrets.randbelow`; `training/splits.py:131-173` the split depends on it and the file set only | `tests/unit/training/test_splits.py:108,114` same/different seed; `tests/unit/training/test_trainer.py:252` — every checkpoint of a resumed run carries the *original* run's seed (slow-marked, passes locally) |
+| 46 | Post-deduplication floor re-check, naming the class and its counts before and after (l.809) | `cli/classify.py:1677` `check_floor_after_dedupe`, run on the `--dataset`, label, manifest and curate paths | `tests/unit/cli/test_train_command.py:250` — constructs two duplicates in a 5-image class, asserts the plan's exact sentence and that training never started (`fake.plans == []`) |
+| 47 | `dataset/` is reserved — loose images error rather than being silently misinterpreted; nested subfolders are a hard error naming both resolutions (l.1666, l.1697, l.1707) | `input/local.py:153-210` `load_organized_dataset` | `tests/unit/input/test_local.py:77` loose files; `:83` `test_nested_subfolders_list_both_resolutions` (asserts the plan's message verbatim and both fix paths) |
+| 48 | Non-interactive setup: none found or more than one is a hard error; never falls back to installing the torch stack into system Python (l.402) | `cli/setup.py:179-198` — the silent branch raises `OpticaSetupError` rather than warning | `tests/unit/cli/test_setup.py:263` none found; `:272` more than one; `:279` a single one used without a prompt (a prompt in that path raises `AssertionError`) |
+| 49 | Never continue silently past an error; **batch related validation errors before raising** (l.1584, l.222) | `config/schema.py:205-226` accumulates fixed-value, numeric-domain and split-sum problems into one raise; `input/classes.py:184` does the same for class names | `tests/unit/input/test_classes.py:121` `test_every_failing_name_is_listed_at_once`; `tests/unit/config/test_schema.py` domain rows. Smoke-verified this session in `.smoke/`: `optica train --epochs 0 --batch-size 0` reports both. **The dedicated flag-value stub is unfilled; see above.** |
+
+#### `replace_destination` — the question asked of checkpoint 2b
+
+**Yes. It is the remove-then-write form that `commit_dataset` superseded, and it
+is dead.** Traced by history rather than by reading the log:
+
+- `git log -S"def replace_destination"` → added in **`fadabd4`** (pass 2,
+  2026-09-13, *"add the Input Manager's detection, conflict and staging
+  logic"*). Its body is the plan's literal l.841: `shutil.rmtree(destination)`,
+  then `mkdir` — the destination is emptied **before** anything is written.
+- `git log -S"def commit_dataset"` → added in **`508d8da`** (pass 3,
+  2026-09-14, *"commit a finished dataset over its destination"*), which is the
+  item-14 deviation: write to `.<name>.partial/`, then remove and `os.replace`.
+- `notes/build-log.md:2140` says so outright: *"Two functions added to
+  `input/manager.py`, **beside** `replace_destination`, which cannot serve: it
+  recreates the directory, and on Windows `os.replace` cannot rename onto an
+  existing directory."*
+- Call sites today: every one of the ten write paths
+  (`cli/classify.py:643,1007,1289,1610`, `api/simple.py:897,1128,1237,1441`
+  and their commits) uses `partial_destination` + `commit_dataset`.
+  `replace_destination` is called from **one place in the repository**:
+  `tests/unit/input/test_manager.py:214`.
+
+So the unsafe form of a protective rule is still present, still exported in
+`input/manager.py`'s `__all__`, still green under its own test, and reachable by
+anyone who imports it — it empties the user's dataset directory with no
+completed replacement to put back. **Left in place, as instructed.** Recorded
+here so that a future pass reaching for "the function that replaces a
+destination" finds this note rather than the wrong function.

@@ -5367,3 +5367,45 @@ files, collision suffixing, atomicity and interruption).
 production caller.
 **Reversible?** Nothing to reverse — no code was touched. Checkpoint 2b (items
 31–49, sections H–N) follows.
+
+### Protective-defaults conformance check — checkpoint 2b, sections H–N
+**Pass:** none — a read-only audit between passes   **Date:** 2026-09-22
+**Where:** `notes/verified.md` § *Checkpoint 2b — sections H–N (items 31–49)*.
+**Nothing under `src/`, `tests/` or `spec/` was changed.**
+**What ran:** items 31–49 — deletion behind confirmation, path and filesystem
+safety, config writes, the global lock, browser exposure, the exported
+artifact, and the seven borderline items marked at checkpoint 1.
+**Found:**
+- **No item 31–49 is NOT BUILT, and none deviates silently.** 18 of 19 are
+  BUILT AND TESTED; item 41 is BUILT DIFFERENTLY and decided.
+- **Item 41 builds *more* browser security than the plan allows.** A `Host`
+  check and an `HttpOnly`/`SameSite=Strict` per-port cookie sit on top of the
+  two guards l.885 calls *"the whole of V1's browser-security surface"*.
+  Decided at `notes/build-log.md:2017` (pass 3), mutation-checked there, and
+  already carrying a human status line flagging it for plan ratification.
+- **Four test gaps, no build gaps.** (1) Seven `@pytest.mark.skip` stubs still
+  carry `stub - pass 4`/`stub - pass 5` reasons although both passes closed;
+  two of them pin protective behaviour that is in fact built —
+  `test_setup_takes_the_lock` and `test_yes_never_drives_optica_setup`.
+  (2) Item 33's *K/A/D/S is suppressed inside `optica run`* clause is
+  structurally true — `_run_body` routes through `api.run()` and never reaches
+  `_train_body` — but no test asserts it, so a refactor could reinstate a
+  prompt whose `D` branch deletes every prior checkpoint mid-pipeline.
+  (3) Item 42's `weights_only=True` guarantee is tested only under
+  `@pytest.mark.slow`, which CI never runs. (4) Item 49's flag-batching stub is
+  unfilled; the behaviour was confirmed instead by a smoke run in `.smoke/`
+  (`optica train --epochs 0 --batch-size 0` reports both violations).
+- **`replace_destination` is confirmed dead and unsafe.** `git log -S` places
+  it in `fadabd4` (pass 2) as the plan's literal remove-then-write form;
+  `commit_dataset` superseded it in `508d8da` (pass 3). It has no production
+  caller, is still in `input/manager.py`'s `__all__`, and still empties a
+  destination with no completed replacement to put back. **Left in place**, per
+  the instruction, and recorded so a later pass finds the note rather than the
+  function.
+**Test state:** `-m "not slow"` → 2413 passed, 12 skipped; `-m "slow"` → 76
+passed (torch 2.14.0+cu130, timm 1.0.29 installed locally; CI runs neither).
+**Whole check, both halves:** 49 requirements — 43 BUILT AND TESTED, 3 BUILT
+DIFFERENTLY (all decided: items 14, 28, 41), 1 BUILT BUT UNTESTED (item 19),
+1 AMBIGUOUS (item 1), and 1 partly NOT BUILT as a **silent deviation** (item
+21, the collision-rename count on `train --manifest` and on every API path).
+**Reversible?** Nothing to reverse — no code was touched.
