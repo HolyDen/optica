@@ -5424,3 +5424,45 @@ needs a result field or a warning code, both permanent public surface, so it is
 chosen deliberately after release rather than quickly before it.
 **Why not before release:** no user file is harmed; the gap is a missing
 message. The same audit found no protective behaviour unbuilt.
+
+## 2026-09-22 — The manual acceptance check (release gate)
+
+Step 0 of the release checklist: the nine-step manual acceptance check, run at a
+real terminal in cmd on Windows, code page 862, with a CUDA GPU. This closed the
+one gap no agent in this build could close — no prompt had ever been answered at
+a real console.
+
+**Result: nine of nine OK. The gate passes.** Two class-A defects were found,
+both display-only, both decided as fast-follow; neither was fixed, so no code
+changed and the repository is untouched by the check.
+
+Produced for the first time by a real process at a real terminal: exit `3` from
+a declined prompt, and exit `130` from Ctrl+C both during training and at a
+prompt. Also seen for the first time: both curate pages in a real browser; Rich
+progress updating live on this console; resumption from a genuine interruption;
+and the pass 6 folder `.gitignore` on a real repository, where `git status
+--short` showed only `.optica.toml` and `dataset/`.
+
+Found and decided:
+
+- The checkpoint prompt prints a path as `...\checkpoints/` — Windows separators
+  with a trailing forward slash. Class A, display-only. Fast-follow.
+- After an early stop, the summary's phase line reports the configured plan
+  (`60 head warmup + 140 fine-tune`) rather than what ran (60 + 6), directly
+  under a correct `Epochs: 66 of 200`. Class A, display-only. Fast-follow.
+- The pass 4 epoch-separator item is **confirmed unfixed**: on a redirected,
+  non-UTF-8 stream the separator still arrives as a literal `\u2502`. Known and
+  logged, not worse than recorded; no new decision. Observing it required a
+  redirected run, because this console takes the UTF-8 path.
+
+Beyond the nine steps, the generated `usage_examples.md` was executed unchanged
+against an exported model and printed a correct prediction — the user's handoff
+artifact works end to end.
+
+The check document itself needs revision before reuse: the console is code page
+862 rather than cp1255, so cmd exercises no fallback path; step 3 needs flags
+that make training last longer than a second on a modern GPU; step 4 should
+describe two distinct checkpoint prompts rather than one; and step 9 leaves the
+Open Images cache and the per-user run logs in `~/.optica`.
+
+Pass: release
