@@ -5548,3 +5548,54 @@ Size: one source file, two test files. Under the brief's "handful of sites" bar,
 so checkpoint 2 may proceed.
 
 Pass: release
+
+## Scoped fix — `optica run` blocks on its own lock — checkpoint 2 (implement)
+
+23 September 2026. Commit `44138cd`, `fix(lockfile): make the global lock
+re-entrant within one process`.
+
+**The change**, `src/optica/utils/lockfile.py` only:
+
+- `_held: LockInfo | None` records the lock *this process took*. `acquire_lock`
+  returns a nested handle when it is set; only the outermost handle releases, so
+  a phase returning does not unlock the run around it. Ownership is never
+  inferred from the PID in the file — the OS reissues the PIDs of dead
+  processes, so a PID read back is not proof this process wrote it.
+- A lock file carrying our own PID that we did not take is the stale path
+  (silent cleanup, proceed) rather than "already running in another terminal",
+  which would be untrue: no other live process can hold our PID.
+- `release_lock` clears the recorded ownership first and unconditionally.
+- `tests/conftest.py` gains an autouse fixture clearing `lockfile._held` around
+  every test: the suite is one process, and leaked ownership would turn every
+  later acquisition into a no-op re-entry — the lock tests would pass while the
+  lock did nothing.
+
+**Evidence.**
+
+- Mutation proof: `git stash push -- src/optica/utils/lockfile.py` →
+  `pytest tests/unit/utils/test_lockfile.py tests/unit/cli/test_classify.py::TestLock`
+  gives **9 failed, 38 passed, 1 skipped**, including the captured
+  `✕ Optica is already running in another terminal.` from the CLI test.
+  `git stash pop` → **47 passed, 1 skipped**. The two tests that pass either way
+  are the ones pinning the preserved behaviour (a live foreign PID still blocks
+  `optica run`, and a phase-named acquisition is not a bypass).
+- Full suite, `.venv` (torch, fastapi, open_clip): **2500 passed, 12 skipped**.
+- CI shape, `.smoke/ci-venv` (`pip install -e ".[test]"`, no torch, no fastapi,
+  no open_clip, no click), `pytest -m "not slow"`: **2362 passed, 26 skipped, 76
+  deselected**. The new tests run on this leg: the extras gate is stubbed in the
+  CLI test, so the regression is covered where CI actually runs.
+- `ruff check` and `mypy` clean in both venvs (bare, as CI invokes them).
+- Real process, `.smoke/run-lock-check/`, a hand-built two-class dataset:
+  `optica run -c cat,dog --dataset ./dataset --yes` now passes its own lock,
+  short-circuits to training, and stops inside the **nested** `optica.train`
+  lock on `cat, dog have fewer than 5 images` — exit 1 from the dataset, not
+  from the lock — leaving no `~/.optica/optica.lock` behind.
+
+**Not touched.** `--dry-run`'s missing parsed values and phase list (out of
+scope by the brief). The six cosmetic items already logged. One thing noticed
+and left alone: `tests/integration/test_exit_codes.py` decodes a subprocess's
+stderr with the ambient code page, so exporting `PYTHONIOENCODING=utf-8` makes
+9 of its tests fail on the `✕` glyph. It is a test-harness fragility, not a
+product defect, and it is invisible in a normal run.
+
+Pass: release
