@@ -101,6 +101,106 @@ class TestAcquire:
         assert not lockfile.lock_path().exists()
 
 
+class TestReentrancy:
+    """One process, one lock, however many phases take it.
+
+    ``optica run`` takes the lock and then composes the phases, each of which
+    takes it again. Before the fix the second acquisition read back the file the
+    first had written, found this process's own live PID, and refused the run —
+    every ``optica run``, on a clean machine, exit 1.
+    """
+
+    def test_a_nested_acquire_returns_the_lock_already_held(self):
+        with (
+            lockfile.acquire_lock("optica run") as outer,
+            lockfile.acquire_lock("optica.fetch") as inner,
+        ):
+            assert inner == outer
+
+    def test_the_nested_release_leaves_the_run_locked(self):
+        with lockfile.acquire_lock("optica run"):
+            with lockfile.acquire_lock("optica.fetch"):
+                pass
+            # The phase is over; the run is not, so the file is still there and
+            # still names the command that took it.
+            stored = json.loads(lockfile.lock_path().read_text(encoding="utf-8"))
+            assert stored["command"] == "optica run"
+            assert stored["pid"] == os.getpid()
+
+    def test_the_outer_release_removes_the_file(self):
+        with lockfile.acquire_lock("optica run"):
+            for phase in ("optica.fetch", "optica.train", "optica.export"):
+                with lockfile.acquire_lock(phase):
+                    pass
+        assert not lockfile.lock_path().exists()
+
+    def test_the_lock_is_released_when_a_phase_raises(self):
+        with (
+            pytest.raises(RuntimeError),
+            lockfile.acquire_lock("optica run"),
+            lockfile.acquire_lock("optica.train"),
+        ):
+            raise RuntimeError("boom")
+        assert not lockfile.lock_path().exists()
+
+    def test_the_lock_is_released_on_a_ctrl_c_in_a_phase(self):
+        # Ctrl+C is the ordinary way a run ends, and it exits 130 through the
+        # same unwinding: a lock left behind here would wedge the next run.
+        with (
+            pytest.raises(KeyboardInterrupt),
+            lockfile.acquire_lock("optica run"),
+            lockfile.acquire_lock("optica.train"),
+        ):
+            raise KeyboardInterrupt
+        assert not lockfile.lock_path().exists()
+
+    def test_the_next_run_takes_the_lock_afresh(self):
+        with (
+            lockfile.acquire_lock("optica run"),
+            lockfile.acquire_lock("optica.fetch"),
+        ):
+            pass
+        with lockfile.acquire_lock("optica fetch") as info:
+            stored = json.loads(lockfile.lock_path().read_text(encoding="utf-8"))
+        assert stored["command"] == "optica fetch"
+        assert stored["run_id"] == info.run_id
+
+    def test_a_phase_acquisition_is_blocked_when_it_is_not_a_re_entry(
+        self, monkeypatch
+    ):
+        """A phase name is not a password.
+
+        Re-entry is granted on ownership this process recorded, never on the
+        name the caller passed: with nothing recorded, a live foreign lock
+        refuses ``optica.fetch`` exactly as it refuses ``optica fetch``.
+        """
+        lockfile.lock_path().write_text(
+            json.dumps({"pid": 4242, "command": "optica run", "run_id": "r"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lockfile, "pid_is_live", lambda pid: True)
+        with pytest.raises(OpticaError) as caught:
+            lockfile.acquire_lock("optica.fetch")
+        assert caught.value.why == "Command: optica run (PID 4242)"
+
+    def test_a_reissued_pid_is_not_another_terminal(self):
+        """A crashed run's lock file, whose PID the OS has since given to us.
+
+        No live process other than this one can hold this PID, so "another
+        terminal" would be untrue. It is the stale-lock path: silent cleanup,
+        then proceed.
+        """
+        lockfile.lock_path().write_text(
+            json.dumps(
+                {"pid": os.getpid(), "command": "optica run", "run_id": "crashed"}
+            ),
+            encoding="utf-8",
+        )
+        with lockfile.acquire_lock("optica fetch") as info:
+            assert info.command == "optica fetch"
+            assert info.run_id != "crashed"
+
+
 class TestHardBlock:
     """The plan's message, line for line."""
 

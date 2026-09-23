@@ -8,6 +8,20 @@ A lock whose PID is no longer alive is cleaned up silently and the command
 proceeds — that is the crash-recovery path, and it must not ask the user
 anything.
 
+**The lock is re-entrant within one process.** ``optica run`` takes it and then
+composes the phases, each of which takes it again, so a non-re-entrant lock made
+the command block on itself and fail every time. Re-entry is decided by
+ownership this module *recorded when it took the lock*, never by inferring
+ownership from the file: a PID read back out of the file is not proof that this
+process wrote it, because the OS reissues the PIDs of dead processes. The first
+acquisition writes the file and the outermost release removes it; the
+acquisitions in between neither write nor remove anything. A second Optica
+process is refused exactly as before.
+
+Acquisition happens on the command path only, which is single-threaded — the
+browser stages run their server inside a lock that is already held, and take
+none of their own.
+
 **Liveness is not checked with ``os.kill(pid, 0)``.** That is the POSIX idiom,
 but on Windows :func:`os.kill` maps every signal except the console-control ones
 onto ``TerminateProcess``, so the "harmless" probe would kill the process it was
@@ -61,6 +75,13 @@ class LockInfo:
     pid: int
     command: str
     run_id: str
+
+
+_held: LockInfo | None = None
+"""The lock this process holds, recorded by the acquisition that took it.
+
+None means this process holds nothing, whatever the file on disk says.
+"""
 
 
 def optica_home() -> Path:
@@ -187,7 +208,15 @@ def read_lock() -> LockInfo | None:
 
 
 def release_lock() -> None:
-    """Remove the lock file if this process holds it."""
+    """Remove the lock file if this process holds it, and drop the ownership.
+
+    The recorded ownership is cleared first and unconditionally: leaving it set
+    with no file behind it would let a later re-entry run believing it is inside
+    a lock that no longer exists.
+    """
+    global _held
+
+    _held = None
     path = lock_path()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -198,10 +227,18 @@ def release_lock() -> None:
 
 
 class _HeldLock:
-    """Context manager returned by :func:`acquire_lock`."""
+    """Context manager returned by :func:`acquire_lock`.
 
-    def __init__(self, info: LockInfo) -> None:
+    Attributes:
+        info: The lock that is held — the outermost one, for a re-entry.
+        outermost: Whether this handle is the one that took the lock. Only it
+            releases; a nested handle leaves the file alone, so the run is still
+            locked when the phase it wrapped returns.
+    """
+
+    def __init__(self, info: LockInfo, *, outermost: bool) -> None:
         self.info = info
+        self.outermost = outermost
 
     def __enter__(self) -> LockInfo:
         return self.info
@@ -212,7 +249,10 @@ class _HeldLock:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        release_lock()
+        # Unconditional, so an exception or a Ctrl+C on its way out of a phase
+        # still leaves the lock released.
+        if self.outermost:
+            release_lock()
 
 
 def acquire_lock(command: str, run_id: str | None = None) -> _HeldLock:
@@ -225,18 +265,31 @@ def acquire_lock(command: str, run_id: str | None = None) -> _HeldLock:
         run_id: The run this lock belongs to. Generated if omitted.
 
     Returns:
-        A context manager that releases the lock on exit.
+        A context manager that releases the lock on exit. Where this process
+        already holds the lock it is the held one, and the handle releases
+        nothing: the phases of ``optica run`` run inside the lock ``run`` itself
+        took, rather than blocking on it.
 
     Raises:
         OpticaError: When another live process holds the lock.
     """
-    held = read_lock()
-    if held is not None:
+    global _held
+
+    if _held is not None:
+        return _HeldLock(_held, outermost=False)
+
+    blocking = read_lock()
+    if blocking is not None and blocking.pid != os.getpid():
         raise OpticaError(
             "Optica is already running in another terminal.",
-            why=f"Command: {held.command} (PID {held.pid})",
+            why=f"Command: {blocking.command} (PID {blocking.pid})",
             fix="Wait for it to complete, or terminate it before running a new command.",
         )
+    if blocking is not None:
+        # Our own PID, in a lock we did not take: a crashed run whose PID the OS
+        # has since reissued to us. No live process other than this one can hold
+        # it, so "another terminal" would be untrue -- it is the stale-lock path.
+        lock_path().unlink(missing_ok=True)
 
     info = LockInfo(
         pid=os.getpid(), command=command, run_id=run_id or uuid.uuid4().hex[:12]
@@ -247,4 +300,5 @@ def acquire_lock(command: str, run_id: str | None = None) -> _HeldLock:
         ),
         encoding="utf-8",
     )
-    return _HeldLock(info)
+    _held = info
+    return _HeldLock(info, outermost=True)

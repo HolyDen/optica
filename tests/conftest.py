@@ -106,6 +106,21 @@ def _clear_optica_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_lock_ownership() -> Iterator[None]:
+    """Start every test owning no lock, and leave none behind.
+
+    The lock is re-entrant within a process, and the whole suite is one process.
+    Ownership leaked out of a test would make every later acquisition a no-op
+    re-entry — the lock tests would pass while the lock did nothing.
+    """
+    from optica.utils import lockfile
+
+    lockfile._held = None
+    yield
+    lockfile._held = None
+
+
+@pytest.fixture(autouse=True)
 def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make any real HTTP request in a test fail loudly.
 

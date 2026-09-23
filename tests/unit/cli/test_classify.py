@@ -14,7 +14,7 @@ import pytest
 from optica.cli.classify import classify_app
 from optica.cli.main import app
 from optica.config.defaults import DEFAULT_TASK
-from optica.exceptions import ExitCode
+from optica.exceptions import ExitCode, OpticaError
 
 
 @pytest.fixture(autouse=True)
@@ -191,6 +191,90 @@ class TestLock:
         monkeypatch.setattr(lockfile, "pid_is_live", lambda pid: True)
         assert app.invoke_guarded(["train"]) == ExitCode.ERROR
         assert "already running" in capsys.readouterr().err
+
+    @staticmethod
+    def _phase_reached(monkeypatch, then) -> list[dict[str, object]]:
+        """Stub the work inside the first phase's own lock.
+
+        ``api._fetch`` takes the lock and calls ``_fetch_body`` inside it, so a
+        stub there runs only if the nested acquisition succeeded. It records the
+        lock file as it stood at that moment, then ends the run the way ``then``
+        says — nothing is fetched, and no extra is needed.
+        """
+        import json
+
+        from optica.api import simple
+        from optica.utils import lockfile
+
+        seen: list[dict[str, object]] = []
+
+        def stub(*args, **kwargs):
+            seen.append(json.loads(lockfile.lock_path().read_text(encoding="utf-8")))
+            raise then
+
+        monkeypatch.setattr(simple, "_fetch_body", stub)
+        # The extras gate is checked before the phases and is not what this
+        # tests; stubbing it keeps the test runnable where torch is not
+        # installed, which is where CI runs it.
+        monkeypatch.setattr(simple, "_require_extras", lambda *a, **k: None)
+        return seen
+
+    def test_run_proceeds_past_the_lock_it_took_itself(
+        self, fake_home, project_dir, monkeypatch
+    ):
+        """The defect: ``run`` locks, then its first phase locks again.
+
+        Before the fix this failed at the second acquisition with "already
+        running in another terminal", naming this very process, on every
+        invocation.
+        """
+        from optica.utils.lockfile import lock_path
+
+        seen = self._phase_reached(monkeypatch, OpticaError("stop here"))
+        assert app.invoke_guarded(["run", "-c", "cat,dog", "-i", "15", "--yes"]) == (
+            ExitCode.ERROR
+        )
+        assert seen, "the fetch phase never ran: run blocked on its own lock"
+        # It ran *inside* the lock run took, not a lock of its own.
+        assert seen[0]["command"] == "optica run"
+        assert not lock_path().exists()
+
+    def test_run_releases_the_lock_on_ctrl_c_in_a_phase(
+        self, fake_home, project_dir, monkeypatch
+    ):
+        """Exit 130, and nothing left behind for the next run to trip over."""
+        from optica.utils.lockfile import lock_path
+
+        seen = self._phase_reached(monkeypatch, KeyboardInterrupt())
+        assert app.invoke_guarded(["run", "-c", "cat,dog", "--yes"]) == (
+            ExitCode.INTERRUPTED
+        )
+        assert seen
+        assert not lock_path().exists()
+
+    def test_a_second_process_still_blocks_run(
+        self, fake_home, project_dir, monkeypatch, capsys
+    ):
+        """The lock's purpose survives the fix: another live run refuses this one.
+
+        Here so that re-entrancy can never be read later as permission to stop
+        taking the lock.
+        """
+        import json
+
+        from optica.utils import lockfile
+
+        seen = self._phase_reached(monkeypatch, OpticaError("must not be reached"))
+        lockfile.lock_path().write_text(
+            json.dumps({"pid": 4242, "command": "optica train", "run_id": "r"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lockfile, "pid_is_live", lambda pid: True)
+        assert app.invoke_guarded(["run", "-c", "cat,dog", "--yes"]) == ExitCode.ERROR
+        err = capsys.readouterr().err
+        assert "already running" in err
+        assert "optica train" in err
+        assert not seen, "the run went ahead while another process held the lock"
 
     def test_version_is_exempt(self, fake_home, monkeypatch):
         import json
