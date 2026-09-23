@@ -5466,3 +5466,85 @@ describe two distinct checkpoint prompts rather than one; and step 9 leaves the
 Open Images cache and the per-user run logs in `~/.optica`.
 
 Pass: release
+
+---
+
+## Scoped fix — `optica run` blocks on its own lock — checkpoint 1 (diagnose and size)
+
+23 September 2026. Brief: `notes/optica-scoped-fix-run-lock.md` (untracked, not
+committed). Diagnosis only; no `src/` edits, no commit.
+
+**Mechanism — confirmed, not reconstructed.** The brief's guess was right, and
+the exact path was produced by an instrumented reproduction (a throwaway pytest
+file in the session scratchpad wrapped `acquire_lock` in `optica.cli.classify`
+and `optica.api.simple` with a recorder and ran
+`app.invoke_guarded(["run", "-c", "cat,dog", "-i", "15", "--yes"])` under a
+temporary `Path.home()`). Two acquisitions, one process:
+
+1. `src/optica/cli/classify.py:2278` — `with acquire_lock("optica run"):`
+2. → `_run_body` (`classify.py:2421`) → `api.run` (`api/simple.py:1809`) →
+   `_run` (`simple.py:1917`) → `_fetch` (`simple.py:687`) —
+   `with acquire_lock("optica.fetch"):`
+
+The second call reads the file the first wrote, finds this process's own live
+PID, and raises. Exit `1`, message `Command: optica run (PID …)` — the command
+name is the outer lock's own, which is the tell. Nothing survives on disk
+because `acquire_lock` raises before writing and the outer `with` then deletes
+the file, which matches the check's "no `optica.lock` before or after".
+
+**Every acquisition site** (`grep -rn "acquire_lock" src/`):
+
+- `cli/classify.py`: 486 fetch, 793 label, 1077 curate, 1385 train, 1940 export,
+  **2278 run**
+- `api/simple.py`: 687 `_fetch`, 1026 `label`, 1182 `curate`, 1348 `_train`,
+  1687 `_export`
+- `cli/config.py`: 91 `--clear-staging`, 95 `--init`
+- `cli/setup.py`: 775 (`--ci` branch), 779 (interactive branch) — mutually
+  exclusive, never nested
+- `utils/lockfile.py:218` — the definition
+
+Only **one** nesting relationship exists. `optica run` is the only CLI command
+that calls the `api` layer (`grep -n "api\.\(fetch\|label\|curate\|train\|export\|run\)"
+src/optica/cli/classify.py` returns lines 2371 and 2421, both inside `run`);
+every other CLI command calls the managers directly, which is why fetch, curate,
+train and export were all fine at a real terminal on 22 September. Inside
+`api._run` the phases are sequential, not nested, so `optica.run()` from Python
+is unaffected.
+
+**`optica classify run` is the same defect, fixed by the same change.**
+`cli/main.py:304` appends the group's own `CommandInfo` objects as the flat
+aliases; verified at runtime that the flat `run` *is* the group's `run` and its
+callback *is* `classify.run`. The only group is `classify`; the flat commands are
+config, curate, export, fetch, label, run, setup, train. No other
+phase-composing command exists.
+
+**Proposed fix** — in `utils/lockfile.py` only, roughly 20 lines:
+
+- Module-level ownership state (`_held: LockInfo | None`, a depth count).
+  `acquire_lock` returns a nested handle that releases nothing when this process
+  already holds the lock; the outermost `__exit__` releases as today. Ownership
+  is *recorded when taken*, never inferred from the file, which is what keeps
+  requirement 3 honest.
+- A stale file carrying this process's own PID (PID reuse after a crash) is
+  treated as stale rather than as a block: no other live process can hold our
+  PID, so the "another terminal" message would be untrue there (requirement 4).
+- A second live process is untouched: it reads the file, sees a foreign live
+  PID, and is refused exactly as now.
+
+**Test plan** — `tests/unit/utils/test_lockfile.py` and
+`tests/unit/cli/test_classify.py::TestLock`:
+
+- Nested acquire in one process proceeds; the inner exit does *not* delete the
+  file; the outer exit does; the stored command stays `optica run`.
+- Behavioural, constructing its own condition: invoke the composed pipeline
+  (`app.invoke_guarded(["run", …])`) with `api.simple._fetch_body` stubbed to
+  record and raise, and assert the stub was reached — i.e. the run got past the
+  nested acquisition — rather than asserting on message text.
+- A foreign live PID still blocks `run` (pins the lock's purpose against a later
+  "just drop it").
+- Mutation proof: revert the fix, show the new tests fail, restore.
+
+Size: one source file, two test files. Under the brief's "handful of sites" bar,
+so checkpoint 2 may proceed.
+
+Pass: release
