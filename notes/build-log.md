@@ -5599,3 +5599,39 @@ stderr with the ambient code page, so exporting `PYTHONIOENCODING=utf-8` makes
 product defect, and it is invisible in a normal run.
 
 Pass: release
+
+## 2026-09-23 — The acceptance check, extended: `optica run`
+
+The nine-step check passed on 22 September and that entry stands. This records
+the work done after it. The extension was scoped deliberately to curate-mode
+`optica run`: interactive, shipping in 0.2.0, and the one surface the nine steps
+structurally could not reach, since `run` is the only CLI command that composes
+the phases through the api layer. Handed back unexercised: the wider surface
+list, `optica setup`'s first-install path, the API tiers, clip and label modes,
+and `--manifest`.
+
+It found a release blocker on its second command — see the two entries above for
+the diagnosis and the fix. What those do not cover is the verification that
+matters to this check: the fix session's own real-process run stopped at a
+dataset error inside the nested train lock, proving the lock but not the
+pipeline. **At a real terminal, in a fresh folder, `optica run -c cat,dog -i 15`
+then ran all four phases — fetch, browser curate, train, export — and exited
+`0`.** That is the defect closed where it was found.
+
+Five smaller findings, all decided as fast-follow, none blocking. `--dry-run`
+prints mode, classes, destination and start point, but not the parsed values or
+the phase list. The export phase does not prompt for a checkpoint rank under
+`run`, though `--checkpoint-rank`'s help says absence prompts and standalone
+`export` did prompt on 22 September. The curate browser tab does not close after
+Confirm. The phases run quiet under `run` — no fetch confirmation, no per-class
+search lines, no epoch lines during training — which is a different thing from
+the intended prompt suppression. And `--clear-staging` again reported `2 items
+removed` for 20 images, confirming on a second run what 22 September saw once.
+
+Not verified, plainly: CI has not seen the lockfile change, since the commits
+are local; the wording of curate's post-Confirm page was read once and not
+recorded; `optica run` was never run twice in the same folder, which is where
+the suppressed K/A/D/S prompt would be observable; and nothing here trained long
+enough to show what the quiet phases feel like on a real training job.
+
+Pass: release
