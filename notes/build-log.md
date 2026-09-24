@@ -5635,3 +5635,41 @@ the suppressed K/A/D/S prompt would be observable; and nothing here trained long
 enough to show what the quiet phases feel like on a real training job.
 
 Pass: release
+
+## 2026-09-24 — Release: Optica 0.2.0 published (V1)
+
+**Published** `optica 0.2.0` to PyPI: https://pypi.org/project/optica/0.2.0/.
+Both `optica-0.2.0-py3-none-any.whl` (266,390 bytes) and `optica-0.2.0.tar.gz`
+(382,845 bytes) were built from `main` at `01bafa1` with hatchling 1.32.4. This
+is the first real release; `0.1.0` and `0.1.1` remain on PyPI as placeholders.
+
+**Commits**
+
+- `3539c00` `build(pyproject): exclude development tooling from the sdist`, on `build/v0.2.0`.
+- `01bafa1` `chore(release): 0.2.0`, on `build/v0.2.0`. It bumps the version to 0.2.0, enables the README CI badge, dates the CHANGELOG entry `2026-09-24`, and drops the placeholder "Full release coming soon." from `description` (the PyPI summary).
+- `main` fast-forwarded `1bb842a..01bafa1`, with four legs green on `main`.
+
+**Tag:** annotated `v0.2.0` on `01bafa1`, message `Optica 0.2.0 — V1, initial release`, pushed.
+
+**sdist decision.** Excluded `CLAUDE.md`, `.claude/`, `.github/` and
+`.gitattributes`, all of which are development tooling not needed to build,
+install or test from source. The published sdist has 135 entries: `src/`,
+`tests/`, `CHANGELOG.md`, `LICENSE`, `README.md`, `pyproject.toml`, and the
+`.gitignore` and `PKG-INFO` that hatchling always includes. `spec/` and `notes/`
+are absent; this is the first build to confirm pass 0's exclusions work.
+
+**Gates.** All of checklist steps 1–10 passed:
+
+- `twine check` PASSED for both files.
+- TestPyPI rehearsal: `optica 0.2.0`.
+- Verification from PyPI in a fresh venv (`--no-cache-dir`, Python 3.11, Windows): `optica 0.2.0`, and `import torch` fails with `ModuleNotFoundError`. A Core install works with no torch present on the published artifact.
+
+**Added to `.venv`.** `build` and `twine` 7.0.0, plus their dependencies,
+installed by checklist step 2. No extra declares them; they are release tooling.
+twine reported readme-renderer 46.0, requests 2.34.2, requests-toolbelt 1.0.0,
+urllib3 2.8.0, keyring 25.7.0, rfc3986 2.0.0, rich 15.0.0, packaging 26.3 and
+id 1.6.1. The full list of what `build` pulled in was not captured.
+
+**Credentials.** Uploads used project-scoped tokens named `optica-upload-local`,
+one on PyPI and one on TestPyPI, entered at twine's prompt. `~/.pypirc` holds
+no token.
