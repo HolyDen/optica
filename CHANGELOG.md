@@ -7,4 +7,4 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Known limitations of a release are documented in the
 [README](README.md#known-limitations-in-v1) rather than repeated here.
 
-## [0.2.0] — Initial release.
+## [0.2.0] — 2026-09-24 — Initial release.

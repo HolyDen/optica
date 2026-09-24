@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "optica"
-version = "0.1.1"
-description = "A simple, powerful Computer Vision toolkit. Full release coming soon."
+version = "0.2.0"
+description = "A simple, powerful Computer Vision toolkit."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"

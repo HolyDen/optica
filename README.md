@@ -5,10 +5,7 @@
 ![PyPI](https://img.shields.io/pypi/v/optica)
 ![Python](https://img.shields.io/pypi/pyversions/optica)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
-<!-- CI badge goes here. Uncomment once the workflow has actually run green on
-     a push — a badge is a claim, and an unverified one is a wrong claim.
 ![CI](https://github.com/HolyDen/optica/actions/workflows/ci.yml/badge.svg)
--->
 
 Optica handles the whole image-classification pipeline — sourcing training
 images, reviewing them, training a model, exporting something deployable. No ML
