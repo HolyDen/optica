@@ -5673,3 +5673,60 @@ id 1.6.1. The full list of what `build` pulled in was not captured.
 **Credentials.** Uploads used project-scoped tokens named `optica-upload-local`,
 one on PyPI and one on TestPyPI, entered at twine's prompt. `~/.pypirc` holds
 no token.
+
+## 2026-09-26 — Post-release session 2: `optica setup` and `optica run`, read
+
+**Read-only.** Nothing in `src/`, `tests/`, `spec/` or `pyproject.toml` changed,
+and nothing was installed or executed except `optica setup --help`,
+`optica run --help` and read-only `git`. So no test run was needed. The session
+read the released code: `src/` on `main` is identical to `v0.2.0` (`01bafa1`),
+and only this file differs between the two. It prepares a companion session
+that will walk a first-time user through `setup` and `run` live.
+
+**Findings:** a detailed report, archived outside the repository and tied to
+`v0.2.0`. Every prompt is quoted with `file:line`, and inference is labelled.
+
+**Answered.**
+
+- **`optica setup`:**
+  - Every prompt, in the order a first-time user meets it, with the
+    non-interactive and `--ci` paths.
+  - What plain setup does about `web` and `clip`, and what
+    `optica run -c cat,dog --mode clip` prints without clip.
+  - Which interpreter setup installs with, for a venv run by full path and for
+    a global or `--user` install.
+  - How GPU detection decides, and three ways to get the CPU branch for one run.
+  - Where scikit-learn comes from.
+- **`optica run`:**
+  - Every prompt, marked shown, suppressed or auto-answered, and as before or
+    after the extras check.
+  - Whether training progress is suppressed, with the plan's lines on both
+    sides.
+  - `--checkpoint-rank`: not pursued, as the plan lines read above do not settle it.
+
+**Found, reported and not decided.** Each item is quoted in the archived findings.
+
+1. **`setup --upgrade` and repair raise no prompts.** The plan's per-package
+   `[y/N]` upgrade prompts, the repair safety prompt and the two build-variant
+   states (`spec/…:593-599`) are not in `cli/setup.py`. An earlier entry records
+   these paths as unexercised; this one records them as unbuilt.
+2. **Setup's Review and completion describe the running interpreter**, not the
+   install target, when the target is a venv that is not active
+   (`utils/system.py:342-351`).
+3. **`optica run` asks to create `--output`, and can clear staging or delete
+   `dataset/`/checkpoints/exports (R/C/S), before its extras check.** Plan
+   l.229 says the extras check runs "before anything is written".
+4. **Every stage prompt under `run` is auto-answered or turned into an error**,
+   because `run` goes through the API layer. This covers three cases the plan
+   treats differently:
+   - The CPU batch-size safety prompt is never asked, against l.1067 and
+     l.1642.
+   - A blocklisted name is a hard error at a terminal, against l.182.
+   - `--force` has no effect under `run`.
+5. **`run` suppresses training, fetch and CLIP progress, and ignores `--quiet`
+   in its stages.** `api.run` forces NORMAL verbosity. This extends the
+   2026-09-23 observation.
+6. **A setup failure exits 1 with `✗`**, where the plan's table gives 3 and
+   its example shows `⚠` (`spec/…:1569`, `606`).
+
+Pass: post-release s2
