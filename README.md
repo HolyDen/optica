@@ -25,26 +25,67 @@ optica run -c cat,dog --mode clip
 covered by an automated test suite of roughly 2,400 tests.
 
 Some paths have had far less real-world exercise than others, and it is more
-useful to say so than to let you find out. In this release the following are
-covered by tests but have not been run end to end against the real thing:
+useful to say so than to let you find out.
 
-- **Interactive prompts.** Every prompt is driven by tests rather than typed at
-  a terminal — the resume menu, the setup prompts, the export checkpoint
-  selection, the class-definition prompt.
+**Run by hand since the release.** Three paths this section originally listed as
+untried were exercised by hand between 25 September and 6 October 2026, on
+Windows:
+
+- **`optica setup`'s first install**, in a fresh virtual environment — with a
+  CUDA GPU and, with `nvidia-smi` hidden, the CPU-only branch.
+- **The interactive prompts** — setup's prompts; `optica run`'s resume menu,
+  step selector and destructive confirmation; the class-definition prompt;
+  `optica train`'s questions about earlier checkpoints and CPU safety; and
+  `optica export`'s checkpoint list.
+- **Resuming after a real Ctrl-C** during training.
+
+What they turned up is listed under [Known issues in 0.2.0](#known-issues-in-020).
+
+**Still not run end to end against the real thing:**
+
 - **The Flickr source.** `--source flickr` needs a key and a Flickr Pro
   subscription. `--source open-datasets` is the default and the exercised path.
 - **Apple-silicon GPU (MPS).** Device selection falls back to CPU correctly, but
   the MPS branch itself has not run on Apple hardware.
-- **`optica setup`'s first install**, and its CPU-only branch. Setup has so far
-  been run against an already-provisioned machine with a CUDA GPU.
-- **Resuming after a genuine interruption.** Resumption is driven by tests from
-  constructed state, not from a real Ctrl-C.
 - **The pipeline on Linux and macOS.** Every end-to-end run so far — fetch,
   train, export — has been on Windows. CI covers all three platforms, but it
   deliberately never installs PyTorch, so what runs there is the test suite
   rather than a real training run.
 
 Please report anything you hit.
+
+---
+
+## Known issues in 0.2.0
+
+Found in the hand runs described above, with what to do about each.
+
+- **Python 3.11 or newer.** Optica is tested on 3.11, 3.12 and 3.13. On an older
+  Python, pip reports no matching version.
+- **CLIP is off by default in `optica setup`.** The quick-start command at the
+  top of this page needs it: answer **y** when setup asks *Install CLIP
+  filtering?*, or run `optica setup --include-extras clip`. Without it,
+  `optica run … --mode clip` asks to create `optica-output` and then stops with
+  an error.
+- **`optica run` shows no progress** while it downloads, filters and trains — a
+  minute or more of silence is normal. Standalone `optica fetch` and
+  `optica train` do show progress. Don't press Ctrl-C: the run stops without a
+  message.
+- **Starting over in a folder with a finished run:** at *Previous session
+  found*, choose **C** (Choose step), then **F** (Fetch), and confirm. **S**
+  (Start fresh) stops with an error when `dataset/` exists, and with
+  `--overwrite` it keeps earlier checkpoints, so the export can come from the
+  previous run. To retrain only, use `optica train` and choose **A** (Archive
+  all) when it asks about earlier checkpoints; `optica export` then lists each
+  checkpoint with the run it came from.
+- **A new folder can offer a previous session** from another folder, because
+  staging is shared by every project of the same user (`~/.optica/staging/`).
+  Choose **S** there — but note that it clears all staging, including another
+  folder's unfinished review, so finish that review first if you have one.
+- **Without a CUDA or Apple-silicon GPU**, training runs on the CPU. Under
+  `optica run`, the CPU batch-size warning prints three times; it is harmless.
+
+Found something else? Please [open an issue](https://github.com/HolyDen/optica/issues).
 
 ---
 
@@ -83,7 +124,7 @@ optica setup
 `optica setup` can install these for you — `optica setup --include-extras web,clip`
 — which is usually easier than getting the bracket quoting right for your shell.
 If a command needs an extra you do not have, Optica tells you which one and how
-to install it before it does any work.
+to install it before it fetches or trains anything.
 
 ### Where to start
 
@@ -206,6 +247,30 @@ optica setup                      # environment, packages, configuration
 
 Every multi-value flag takes commas, and repeating the flag works too — `-c cat
 -c dog,bird` gives you three classes.
+
+### Manifests
+
+`--manifest` takes a CSV file with a header row, or a JSON file holding an array
+of objects; the extension decides which. Only two columns are read, `path` and
+`class`, in any letter case. Anything else is ignored.
+
+```csv
+path,class
+photos/IMG_0001.jpg,cat
+photos/IMG_0002.jpg,dog
+```
+
+- `path` is required. A relative path is resolved from the manifest's own
+  folder, not from where you run the command. URLs aren't supported in V1.
+- `class` is all or nothing: give every row a class, or leave the column out.
+  A manifest with some rows labeled and some not is refused.
+- A fully labeled manifest goes straight to training:
+  `optica train --manifest images.csv`.
+- An unlabeled one is labeled in the browser (needs `optica[web]`):
+  `optica run --manifest images.csv -c cat,dog` defaults to label mode.
+- A row repeated exactly is read once; the same image under two different
+  classes is an error.
+- Images are copied into `dataset/`. Your originals are untouched.
 
 ---
 
