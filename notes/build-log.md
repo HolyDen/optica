@@ -5730,3 +5730,77 @@ that will walk a first-time user through `setup` and `run` live.
    its example shows `⚠` (`spec/…:1569`, `606`).
 
 Pass: post-release s2
+
+## 2026-10-06 — Post-release: README updated on GitHub (no 0.2.1)
+
+**What changed.** `README.md` only, in four places, on branch
+`post-release/readme` (`d3b5318`). Nothing in `src/`, `tests/`, `spec/`,
+`pyproject.toml`, `CHANGELOG.md` or configuration changed, and `version` was
+not touched.
+
+1. **Status.** It now says that three paths it had listed as never run by hand
+   were exercised on Windows between 2026-09-25 and 2026-10-06: setup's first
+   install in a fresh venv, both the GPU branch and the CPU-only branch (with
+   `nvidia-smi` hidden); the prompts of `setup`, `run` (resume menu, step
+   selector, destructive confirmation), class definition, `train`
+   (earlier checkpoints, CPU safety) and `export` (checkpoint list); and
+   resuming after a real Ctrl-C during training. The Flickr, MPS and
+   Linux/macOS bullets are unchanged, under *Still not run end to end*.
+2. **Known issues in 0.2.0**, a new section after Status. It covers six issues
+   observed live in October 2026, each with what to do: the Python floor; CLIP
+   off by default in setup; `run`'s silence; starting over in a folder with a
+   finished run; a previous session offered from another folder; and the CPU
+   batch-size warning printed three times under `run`. It ends with a link to
+   GitHub issues.
+3. **Manifests**, a new subsection in *The CLI (Tier 2)*. It covers the CSV and
+   JSON formats, the `path` and `class` columns, the all-or-nothing labelling
+   rule, the train and label routes, duplicates and contradictions, and the copy
+   into `dataset/`. It includes a three-line CSV example.
+4. **Optional extras.** "…before it does any work" became "…before it fetches
+   or trains anything". Under `optica run`, the CLI asks to create `--output`
+   and shows the R/C/S menu, which can clear staging, before `api.run`'s
+   `_require_extras`. That check still precedes every label, fetch, curate,
+   train and export call. Standalone `fetch`, `label` and `train` check their
+   extra before any download, copy or training.
+
+**Why.** No 0.2.1 is planned; code fixes wait for a later full check. The
+README on GitHub now tells readers the current truth. PyPI's copy stays as
+released, which is accepted.
+
+**Where the code corrected the draft.**
+- Partly labelled manifests are a hard error (`Manifest.require_consistent`).
+- Staging is per user (`~/.optica/staging/`), not per machine.
+- Device selection is CUDA, then MPS, then CPU. "Without an NVIDIA GPU" was
+  wrong for Apple silicon.
+- `requires-python = ">=3.11"` has no upper bound, so the README says
+  "3.11 or newer, tested on 3.11–3.13".
+
+**Findings, reported and not fixed.**
+- **No README check exists in the repository or in CI.** Pass 6's three README
+  verification scripts, including `verify_gitignore_claim.py`, were never
+  committed. `git log --all` and `git ls-files` show none, and `ci.yml` never
+  mentions the README. A search of C: for the pass-6 README scripts stopped
+  unfinished; result unknown — it does not change the finding that no README
+  check is committed or run by CI.
+- **`optica run`'s S (Start fresh) clears all staging with no confirmation of
+  its own** (`cli/classify.py:2491`, `_resume_choice`). It calls
+  `input_manager.clear_staging()`, which removes everything under
+  `~/.optica/staging/`, including another project's unfinished review.
+  `clear_staging`'s docstring assumes the caller has already confirmed. The
+  README warns about it in *Known issues*.
+
+**Checks.** A throwaway README check was recreated in the session scratchpad
+and not committed. It made 65 assertions against the installed package: README
+structure and anchor, stale text removed, `pyproject` metadata, flags in the
+Typer tree, the CLIP extra and its prompt, prompt letters and labels, device
+order, staging, manifest behaviour (parsing the README's own CSV example), and
+extras-before-work ordering. Two of the assertions are live CLI runs without
+CLIP. In `.venv`, 65 passed, 0 failed (the 2 live runs were skipped there
+because `open_clip` is installed). In `.smoke/ci-venv`, 65 passed, 0 failed,
+including both live runs: `fetch` and `run` with `--mode clip` exited 1 naming
+the clip extra, with no `dataset/`; `run` had created `optica-output/` first.
+Tests are unchanged from the last record: `.venv` (full) 2500 passed,
+12 skipped; `.smoke/ci-venv` (`-m "not slow"`) 2362 passed, 26 skipped,
+76 deselected.
+
+Pass: post-release readme
